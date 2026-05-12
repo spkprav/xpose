@@ -1,0 +1,63 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+out/
+build/
+
+# Electron-specific
+*.asar
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test coverage
+coverage/
+
+# ── Personal content (do NOT commit) ────────────────────────────────────
+# Generated wiki + personal posts / drafts / inbox + media assets
+social-wiki/
+# Strategy & planning docs
+plans/
+# Local caches (keyword extraction, layout, telegram pulls)
+.cache/
+# Python virtualenv if user creates one
+.venv/
+# Claude / agent settings
+.claude/
+
+# Personal analysis pipelines (not part of OSS app)
+scripts/
+
+# Local symlinks into personal Obsidian vault
+docs/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Local-only Makefile (personal analysis pipelines)
+Makefile
+
+# Personal operator notes
+CLAUDE.md
+PRODUCT.md

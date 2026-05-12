@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <title>xPose</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            'x-bg':             '#000000',
+            'x-surface':        '#16181c',
+            'x-border':         '#2f3336',
+            'x-text':           '#e7e9ea',
+            'x-text-secondary': '#71767b',
+            'x-accent':         '#1d9bf0',
+          }
+        }
+      }
+    }
+  </script>
+  <link rel="stylesheet" href="./renderer/styles.css">
+</head>
+<body class="h-screen overflow-hidden bg-x-bg text-x-text">
+  <div id="content" class="h-full"></div>
+
+  <div id="sidebar" class="fixed top-0 right-0 h-full bg-x-surface border-l border-x-border flex flex-col" style="width:320px">
+
+    <!-- ── Header ─────────────────────────────────────────── -->
+    <header class="sb-header">
+      <span class="sb-wordmark">xPose</span>
+      <div class="sb-header-actions">
+        <button id="btn-reload" class="sb-icon-btn" title="Reload page">
+          <i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i>
+        </button>
+        <button id="btn-copy-url" class="sb-icon-btn" title="Copy URL">
+          <i data-lucide="link" class="w-3.5 h-3.5"></i>
+        </button>
+        <button id="btn-focus-mode" class="sb-icon-btn" title="Focus mode">
+          <i data-lucide="maximize-2" class="w-3.5 h-3.5"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- ── Tab strip ──────────────────────────────────────── -->
+    <nav class="sb-tabs">
+      <button data-tab="circle"   class="tab-btn active">Circle</button>
+      <button data-tab="drafts"   class="tab-btn">Drafts</button>
+      <button data-tab="settings" class="tab-btn">Settings</button>
+    </nav>
+
+    <!-- ── Global status line (ephemeral messages) ─────────── -->
+    <div id="global-status" class="sb-global-status hidden"></div>
+
+    <!-- ═══════════════════════════════════════════════════════
+         CIRCLE PANEL
+    ════════════════════════════════════════════════════════ -->
+    <div id="panel-circle" class="panel flex-1 flex flex-col overflow-hidden">
+
+      <!-- Toolbar: two rows -->
+      <div class="circle-toolbar">
+        <div class="circle-toolbar-row1">
+          <span id="circle-summary" class="text-xs text-x-text-secondary">No circle yet</span>
+          <button id="btn-toggle-setup" class="sb-action-link">Setup</button>
+        </div>
+        <div class="circle-toolbar-row2">
+          <div class="crawl-chip-group">
+            <button class="crawl-chip active" data-crawl-rel="following">Following</button>
+            <button class="crawl-chip" data-crawl-rel="mutual">Mutual</button>
+            <button class="crawl-chip" data-crawl-rel="follower">Followers</button>
+            <button class="crawl-chip" data-crawl-rel="2nd_degree">2°</button>
+            <button class="crawl-chip" data-crawl-rel="uncrawled" style="border-color:#f59e0b;color:#f59e0b" title="All profiles not yet crawled">New</button>
+          </div>
+          <button id="btn-crawl-start" class="sb-btn-primary" style="padding:4px 12px;font-size:10px">Crawl</button>
+        </div>
+      </div>
+
+      <!-- Setup drawer (hidden by default) -->
+      <div id="circle-setup" class="sb-drawer hidden">
+        <div class="flex gap-2">
+          <input id="import-file-path" type="text" readonly placeholder="follower.js / following.js"
+            class="sb-input flex-1 min-w-0 cursor-pointer" title="Click Browse to select file">
+          <button id="btn-browse-import" class="sb-btn-ghost whitespace-nowrap">Browse</button>
+        </div>
+        <div class="flex gap-2 mt-2">
+          <select id="import-type" class="sb-input flex-1">
+            <option value="follower">follower.js. my followers</option>
+            <option value="following">following.js. who I follow</option>
+          </select>
+          <button id="btn-import-circle" class="sb-btn-primary whitespace-nowrap">Import</button>
+        </div>
+        <p id="import-status" class="mt-1.5 text-xs text-x-text-secondary"></p>
+        <div class="mt-2 pt-2 border-t border-x-border flex items-center justify-between">
+          <span class="text-xs text-x-text-secondary">Or pull live from X</span>
+          <button id="btn-import-from-twitter" class="sb-btn-ghost text-xs">
+            <i data-lucide="download" class="w-3 h-3 mr-1"></i>Fetch followers + following
+          </button>
+        </div>
+        <div class="mt-2 flex justify-end">
+          <button id="btn-recompute-mutuals" class="sb-action-link text-xs" style="color:#34d399">↻ Recompute mutuals from DB</button>
+        </div>
+      </div>
+
+      <!-- Crawl strip (shown only when crawling) -->
+      <div id="crawl-strip" class="sb-crawl-strip hidden">
+        <span class="crawl-pulse-dot"></span>
+        <span id="crawl-strip-text" class="flex-1 text-xs text-x-text-secondary truncate">Starting...</span>
+        <button id="btn-pause-crawl" class="sb-action-link ml-2">Pause</button>
+        <button id="btn-resume-crawl" class="sb-action-link ml-2 hidden">Resume</button>
+      </div>
+
+      <!-- Sub-tabs: Members | Feed -->
+      <div class="sb-subtabs">
+        <button class="subtab-btn active" data-subtab="members">Members</button>
+        <button class="subtab-btn" data-subtab="feed">Feed</button>
+        <button id="btn-refresh-feed" class="sb-icon-btn" style="width:28px;height:28px;margin:0 4px;display:none" title="Refresh feed">
+          <i data-lucide="refresh-cw" class="w-3 h-3"></i>
+        </button>
+      </div>
+
+      <!-- Feed filter bar (only in feed view) -->
+      <div id="feed-filters" class="sb-feed-filters hidden">
+        <div class="feed-filter-group">
+          <button class="filter-btn active" data-rel="all">All</button>
+          <button class="filter-btn" data-rel="mutual">Mutual</button>
+          <button class="filter-btn" data-rel="following">Following</button>
+          <button class="filter-btn" data-rel="follower">Follower</button>
+        </div>
+        <div class="feed-filter-group">
+          <button class="filter-btn" data-days="0.33">8h</button>
+          <button class="filter-btn" data-days="0.5">12h</button>
+          <button class="filter-btn" data-days="1">24h</button>
+          <button class="filter-btn" data-days="7">7d</button>
+          <button class="filter-btn" data-days="30">30d</button>
+          <button class="filter-btn active" data-days="90">All</button>
+        </div>
+        <div class="feed-filter-group">
+          <button class="filter-btn active" data-sort="engagement">Top</button>
+          <button class="filter-btn" data-sort="recent">New</button>
+        </div>
+      </div>
+
+      <!-- Circle member list -->
+      <div id="circle-list" class="flex-1 overflow-y-auto">
+        <p class="p-4 text-xs text-x-text-secondary text-center leading-relaxed">
+          Import follower.js or following.js<br>from your Twitter data export.
+        </p>
+      </div>
+
+      <!-- Circle feed -->
+      <div id="circle-feed" class="flex-1 overflow-y-auto hidden"></div>
+
+      <!-- Hidden: backward-compat IDs used by existing JS handlers -->
+      <div class="hidden" aria-hidden="true">
+        <div id="circle-stats"></div>
+        <button id="btn-load-circle"></button>
+        <button id="btn-queue-crawl"></button>
+        <button id="btn-start-crawl"></button>
+        <div id="crawl-progress-bar-wrap"><div id="crawl-progress-bar"></div></div>
+        <span id="crawl-status-text"></span>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════
+         DRAFTS PANEL
+    ════════════════════════════════════════════════════════ -->
+    <div id="panel-drafts" class="panel flex-1 flex flex-col overflow-hidden hidden">
+
+      <!-- Toolbar -->
+      <div class="sb-toolbar">
+        <button id="btn-generate-drafts" class="sb-btn-primary flex-1 mr-2">
+          Generate from circle
+        </button>
+        <button id="btn-export-wiki" class="sb-btn-ghost" title="Export social wiki">
+          <i data-lucide="book-open" class="w-3.5 h-3.5 mr-1"></i>Wiki
+        </button>
+      </div>
+
+      <p id="drafts-status" class="px-3 pb-2 text-xs text-x-text-secondary text-center hidden"></p>
+
+      <!-- Draft list -->
+      <div id="drafts-list" class="flex-1 overflow-y-auto">
+        <div class="draft-empty">
+          <p class="text-xs text-x-text-secondary text-center leading-relaxed mt-8 px-6">
+            Generate drafts based on what your circle is talking about.
+          </p>
+          <p class="text-xs text-x-text-secondary text-center mt-1">
+            <button id="btn-load-drafts" class="sb-action-link">Load saved drafts</button>
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════
+         SETTINGS PANEL
+    ════════════════════════════════════════════════════════ -->
+    <div id="panel-settings" class="panel flex-1 flex flex-col overflow-hidden hidden">
+      <div class="flex-1 overflow-y-auto p-4 space-y-6">
+
+        <section>
+          <h2 class="settings-heading">LLM Provider</h2>
+          <div id="provider-list" class="space-y-2"></div>
+        </section>
+
+        <section>
+          <div class="flex items-center justify-between mb-2">
+            <h2 class="settings-heading">ICP Criteria</h2>
+            <button id="btn-generate-icp" class="sb-action-link text-x-accent">Generate from Profile</button>
+          </div>
+          <p class="text-xs text-x-text-secondary mb-2">Defines your audience for tweet filtering</p>
+          <textarea id="icp-criteria" rows="5"
+            placeholder="e.g. Tech founders, SaaS builders, AI/ML interest, English speakers..."
+            class="sb-textarea"></textarea>
+          <p id="icp-status" class="mt-1.5 text-xs text-x-text-secondary"></p>
+        </section>
+
+        <section>
+          <h2 class="settings-heading">Feed Links</h2>
+          <p class="text-xs text-x-text-secondary mb-2">One URL per line. Visited to collect tweets.</p>
+          <textarea id="feed-links" rows="6"
+            placeholder="https://x.com/i/lists/..."
+            class="sb-textarea font-mono text-xs"></textarea>
+        </section>
+
+        <section>
+          <h2 class="settings-heading">Database (Postgres)</h2>
+          <p class="text-xs text-x-text-secondary mb-2">Local or remote. Test before saving.</p>
+          <div class="grid grid-cols-2 gap-2">
+            <input id="db-host" placeholder="host (e.g. localhost)" class="sb-textarea font-mono text-xs col-span-2" />
+            <input id="db-port" placeholder="port (5432)" class="sb-textarea font-mono text-xs" />
+            <input id="db-database" placeholder="database (xpose)" class="sb-textarea font-mono text-xs" />
+            <input id="db-user" placeholder="user (postgres)" class="sb-textarea font-mono text-xs" />
+            <input id="db-password" type="password" placeholder="password (blank = trust)" class="sb-textarea font-mono text-xs" />
+          </div>
+        </section>
+
+        <section>
+          <h2 class="settings-heading">Profile</h2>
+          <button id="btn-fetch-profile" class="w-full py-2 px-3 text-xs border border-x-border rounded hover:bg-x-border transition-colors">
+            Fetch from X
+          </button>
+          <div id="profile-info" class="mt-2 hidden">
+            <div class="flex items-center gap-2.5 px-2 py-2 bg-x-bg rounded">
+              <div class="w-8 h-8 rounded-full bg-x-border flex-shrink-0"></div>
+              <div>
+                <p id="profile-name" class="text-sm font-medium"></p>
+                <p id="profile-handle" class="text-xs text-x-text-secondary"></p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <button id="btn-save-settings" class="w-full py-2.5 text-sm font-medium bg-x-accent hover:bg-blue-500 text-white rounded transition-colors">
+          Save Settings
+        </button>
+        <p id="settings-status" class="text-xs text-center text-x-text-secondary"></p>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="./renderer/app.js"></script>
+</body>
+</html>
