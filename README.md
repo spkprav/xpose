@@ -8,6 +8,11 @@ it runs alongside your normal browsing session, intercepts X's own GraphQL respo
 
 built by [@praveeninpublic](https://x.com/praveeninpublic).
 
+- X: [@praveeninpublic](https://x.com/praveeninpublic)
+- GitHub: [@spkprav](https://github.com/spkprav)
+- YouTube: [@praveeninpublic](https://youtube.com/@praveeninpublic)
+- LinkedIn: [praveen-kumars](https://www.linkedin.com/in/praveen-kumars/)
+
 ---
 
 ## What it does
@@ -110,8 +115,27 @@ The app uses your own logged-in X session. Nothing is sent to a server you don't
 
 MIT. See [LICENSE](./LICENSE).
 
-## Responsible use
+## TOS risk (read this before running)
 
-- Don't crawl other users' followers / following at scale you'd be uncomfortable with someone doing to you.
-- Respect rate limits. The default pacing (5s between profiles, 3s between scrolls) is conservative; don't lower it.
-- Read X's TOS. Personal-research tooling is generally fine; building a commercial scraping service on top of this is not the intent.
+**Running this tool violates X's Terms of Service.** I checked. Don't run it on an account you can't afford to lose.
+
+X's TOS §4 ("Misuse of the Services") prohibits, verbatim:
+
+> "access or search or attempt to access or search the Services by any means (automated or otherwise) other than through our currently available, published interfaces that are provided by us (and only pursuant to the applicable terms and conditions), unless you have been specifically allowed to do so in a separate agreement with us (NOTE: crawling or scraping the Services in any form, for any purpose without our prior written consent is expressly prohibited)"
+
+xPose intercepts X's internal GraphQL responses via Chrome DevTools Protocol and synthesizes scroll gestures to paginate. That is automated access to a non-published interface, regardless of whether you're logged in. "Your own logged-in session" is not a carve-out in the TOS.
+
+Specific risks:
+
+- **Account suspension or termination.** §4 grants X this right for any ToS violation.
+- **Legal action.** X has sued scrapers (Bright Data, CCDH) on TOS-only grounds.
+- **No safe-harbor for "personal use".** The TOS says "in any form, for any purpose."
+
+This repo exists because the tool is useful for personal research on data you already have access to, and because the engineering pattern (CDP interception of your own browser session) is interesting on its own merits. It is published with full disclosure of the legal posture. It is not a license to run it. If you do run it:
+
+- Use a burner account, not your main.
+- Keep the default pacing (5s/profile, 3s/scroll). Do not lower it.
+- Do not resell the data, redistribute crawled profiles, or build a commercial service on top.
+- Do not crawl other users' followers / following at a scale you'd be uncomfortable with someone doing to you.
+
+Read X's TOS yourself: https://x.com/en/tos (§4 is the relevant part).
