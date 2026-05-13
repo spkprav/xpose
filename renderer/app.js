@@ -694,9 +694,9 @@ ipcRenderer.on('settings-loaded', (event, loaded) => {
   // database fields
   const db = settings.database || {};
   if ($('#db-host'))     $('#db-host').value     = db.host     || 'localhost';
-  if ($('#db-port'))     $('#db-port').value     = db.port     != null ? db.port : 5432;
+  if ($('#db-port'))     $('#db-port').value     = db.port     != null ? db.port : 54329;
   if ($('#db-user'))     $('#db-user').value     = db.user     || 'postgres';
-  if ($('#db-password')) $('#db-password').value = db.password || '';
+  if ($('#db-password')) $('#db-password').value = db.password || 'postgres';
   if ($('#db-database')) $('#db-database').value = db.database || 'xpose';
   renderProviders();
   if (settings.profile) {
@@ -714,9 +714,9 @@ $('#btn-save-settings').addEventListener('click', () => {
     feedLinks:   $('#feed-links')?.value   || '',
     database: {
       host:     $('#db-host')?.value     || 'localhost',
-      port:     Number($('#db-port')?.value) || 5432,
+      port:     Number($('#db-port')?.value) || 54329,
       user:     $('#db-user')?.value     || 'postgres',
-      password: $('#db-password')?.value || '',
+      password: $('#db-password')?.value || 'postgres',
       database: $('#db-database')?.value || 'xpose',
     },
   };
@@ -742,9 +742,9 @@ ipcRenderer.on('settings-saved', (event, success) => {
     settings.feedLinks    = $('#feed-links')?.value   || '';
     settings.database = {
       host:     $('#db-host')?.value     || 'localhost',
-      port:     Number($('#db-port')?.value) || 5432,
+      port:     Number($('#db-port')?.value) || 54329,
       user:     $('#db-user')?.value     || 'postgres',
-      password: $('#db-password')?.value || '',
+      password: $('#db-password')?.value || 'postgres',
       database: $('#db-database')?.value || 'xpose',
     };
     providerInputs = {};
