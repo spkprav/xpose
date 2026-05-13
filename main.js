@@ -810,8 +810,8 @@ function createWindow() {
       listCaptured = [];
 
       const SCROLL_DELAY = 3500;
-      const USERS_PER_SCROLL = 20; // Twitter loads ~20 users per scroll
-      const MAX_SCROLLS = 60;      // cap at ~1200 users per list
+      const MAX_SCROLLS = 300;     // hard safety cap (~6000 users)
+      const IDLE_LIMIT  = 4;       // stop after N scrolls produce zero new captures
 
       const scrollPage = () => twitterView.webContents.executeJavaScript(
         'window.scrollTo(0, document.body.scrollHeight)'
@@ -846,20 +846,36 @@ function createWindow() {
       const scrollList = async (label, relationship) => {
         await wait(SCROLL_DELAY);
         const total = await readCount();
-        const needed = total > 0
-          ? Math.min(MAX_SCROLLS, Math.ceil(total / USERS_PER_SCROLL) + 3)
-          : 15; // fallback if count unreadable
-        console.log(`[ListFetch] ${label}: total=${total}, scrolls=${needed}`);
+        console.log(`[ListFetch] ${label}: total=${total}, scrolling until idle (idleLimit=${IDLE_LIMIT}, cap=${MAX_SCROLLS})`);
 
-        for (let i = 0; i < needed; i++) {
-          const captured = listCaptured.filter(p => p.relationship === relationship).length;
-          win.webContents.send('twitter-import-status', {
-            progress: `${label}: ${captured}/${total || '?'} loaded (scroll ${i + 1}/${needed})`
-          });
+        let idle = 0;
+        let prev = listCaptured.filter(p => p.relationship === relationship).length;
+
+        for (let i = 0; i < MAX_SCROLLS; i++) {
           await scrollPage();
           await wait(SCROLL_DELAY);
-          // Stop early if we've captured enough
-          if (captured >= total && total > 0) break;
+
+          const captured = listCaptured.filter(p => p.relationship === relationship).length;
+          const delta = captured - prev;
+          prev = captured;
+
+          if (delta === 0) idle++;
+          else idle = 0;
+
+          win.webContents.send('twitter-import-status', {
+            progress: `${label}: ${captured}/${total || '?'} (scroll ${i + 1}, +${delta}, idle ${idle}/${IDLE_LIMIT})`
+          });
+
+          // Stop when target known and reached.
+          if (total > 0 && captured >= total) {
+            console.log(`[ListFetch] ${label}: hit total ${total} at scroll ${i + 1}`);
+            break;
+          }
+          // Stop when no new API responses for IDLE_LIMIT consecutive scrolls.
+          if (idle >= IDLE_LIMIT) {
+            console.log(`[ListFetch] ${label}: idle stop at scroll ${i + 1}, captured ${captured}`);
+            break;
+          }
         }
       };
 
@@ -877,10 +893,27 @@ function createWindow() {
 
       // Save to DB
       let saved = 0;
+      let failed = 0;
+      let firstErr = null;
       for (const profile of listCaptured) {
-        try { await db.upsertSocialCircle(profile); saved++; } catch (_) {}
+        try {
+          await db.upsertSocialCircle(profile);
+          saved++;
+        } catch (err) {
+          failed++;
+          if (!firstErr) firstErr = err;
+        }
       }
-      await db.markMutuals();
+      if (failed > 0) {
+        console.error(`[ListFetch] DB save: saved=${saved}, failed=${failed}. First error:`, firstErr?.message || firstErr);
+      } else {
+        console.log(`[ListFetch] DB save: ${saved}/${listCaptured.length} rows`);
+      }
+      try {
+        await db.markMutuals();
+      } catch (err) {
+        console.error('[ListFetch] markMutuals failed:', err?.message || err);
+      }
 
       // Return home
       twitterView.webContents.loadURL('https://x.com/home');

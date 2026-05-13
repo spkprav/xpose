@@ -1,19 +1,34 @@
 {
   "restartable": "rs",
-  "ignore": [
-    ".git",
-    "node_modules/**/node_modules"
-  ],
   "verbose": true,
   "execMap": {
     "js": "electron ."
   },
   "watch": [
-    "./**/*.js",
-    "./**/*.html"
+    "main.js",
+    "preload.js",
+    "lib/db.js",
+    "lib/settings.js",
+    "lib/twitter/",
+    "lib/llm/",
+    "renderer/",
+    "index.html"
   ],
+  "ext": "js,html",
+  "ignore": [
+    ".git",
+    "node_modules",
+    "lib/wiki/",
+    "scripts/",
+    "social-wiki/",
+    "plans/",
+    ".cache/",
+    "out/",
+    "docs/"
+  ],
+  "delay": "500",
+  "signal": "SIGTERM",
   "env": {
     "NODE_ENV": "development"
-  },
-  "ext": "js,json,html"
+  }
 }

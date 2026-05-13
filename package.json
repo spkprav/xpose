@@ -13,6 +13,7 @@
     "db:psql": "docker compose exec postgres psql -U ${PGUSER:-postgres} -d ${PGDATABASE:-xpose}",
     "db:migrate": "docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U ${PGUSER:-postgres} -d ${PGDATABASE:-xpose} < schema.sql",
     "db:reset": "docker compose down -v && docker compose up -d postgres",
+    "wiki:setup": "bash lib/wiki/setup-ollama.sh",
     "wiki:gen": "node lib/wiki/generate.js",
     "wiki:keywords": "node lib/wiki/extract-keywords.js",
     "wiki:flush": "node lib/wiki/flush-keywords.js"

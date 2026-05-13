@@ -333,11 +333,13 @@ LIMIT 100;
 CREATE TABLE IF NOT EXISTS social_circle (
     id SERIAL PRIMARY KEY,
     user_id VARCHAR(30) UNIQUE,
-    screen_name VARCHAR(50),
+    screen_name VARCHAR(50) UNIQUE,
     display_name VARCHAR(100),
     bio TEXT,
     followers_count INT DEFAULT 0,
     following_count INT DEFAULT 0,
+    is_follower  BOOLEAN DEFAULT FALSE,   -- they follow me
+    is_following BOOLEAN DEFAULT FALSE,   -- I follow them
     relationship VARCHAR(20) NOT NULL,    -- 'follower','following','mutual','2nd_degree'
     is_active BOOLEAN DEFAULT TRUE,
     last_crawled_at TIMESTAMP,
@@ -345,6 +347,25 @@ CREATE TABLE IF NOT EXISTS social_circle (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Upgrade path for existing installs missing the boolean flags.
+ALTER TABLE social_circle ADD COLUMN IF NOT EXISTS is_follower  BOOLEAN DEFAULT FALSE;
+ALTER TABLE social_circle ADD COLUMN IF NOT EXISTS is_following BOOLEAN DEFAULT FALSE;
+
+-- Upgrade path: ensure UNIQUE (screen_name) so upsertSocialCircle's ON CONFLICT works.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'social_circle'::regclass AND contype = 'u'
+      AND conkey = (SELECT array_agg(attnum) FROM pg_attribute
+                    WHERE attrelid = 'social_circle'::regclass AND attname = 'screen_name')
+  ) THEN
+    DELETE FROM social_circle a USING social_circle b
+     WHERE a.id > b.id AND a.screen_name = b.screen_name AND a.screen_name IS NOT NULL;
+    ALTER TABLE social_circle ADD CONSTRAINT social_circle_screen_name_key UNIQUE (screen_name);
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_social_circle_screen_name ON social_circle(screen_name);
 CREATE INDEX IF NOT EXISTS idx_social_circle_crawl_next ON social_circle(crawl_priority DESC, last_crawled_at ASC NULLS FIRST);
