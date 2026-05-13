@@ -33,8 +33,8 @@ This is personal-tooling. Fork it, point it at your circle, see what you actuall
 ## Prerequisites
 
 - Node 18+ and npm
-- Postgres 14+ (local or remote)
-- Optional: Ollama for local LLM analysis
+- Docker (recommended) **or** local Postgres 14+
+- Optional: Ollama for local LLM keyword extraction (auto-installed by `npm run wiki:setup`)
 
 ## Install
 
@@ -42,16 +42,37 @@ This is personal-tooling. Fork it, point it at your circle, see what you actuall
 git clone https://github.com/spkprav/xpose
 cd xpose
 npm install
+cp .env.example .env       # defaults match the docker setup below
 ```
 
 ## Set up the database
+
+### Option A: Docker (recommended)
+
+Runs Postgres 16 in a container on port `54329` (non-default to avoid clashing with any local Postgres).
+
+```bash
+npm run db:up         # start container, auto-loads schema.sql on first boot
+npm run db:psql       # open psql shell in the container (sanity check)
+```
+
+Other helpers:
+
+```bash
+npm run db:migrate    # re-apply schema.sql (idempotent; use after schema edits)
+npm run db:logs       # tail postgres logs
+npm run db:down       # stop container (data persists in named volume)
+npm run db:reset      # destroy volume + restart fresh (DANGER: wipes data)
+```
+
+### Option B: Local Postgres
 
 ```bash
 createdb xpose
 psql -d xpose -f schema.sql
 ```
 
-(Database name is configurable in the Settings panel.)
+Then update `.env` and the Settings panel to point at your local instance.
 
 ## Run
 
@@ -63,12 +84,32 @@ npm start      # plain electron .
 On first launch:
 
 1. Open **Settings** in the sidebar.
-2. Configure **Database** (host, port, user, password, database).
+2. Confirm **Database** matches your setup (defaults are localhost:54329 / postgres / postgres / xpose for docker).
 3. Configure **LLM Provider** (Ollama defaults to `localhost:11434`).
 4. Add **Feed Links**. one URL per line for X lists / community pages you want to harvest.
 5. Save.
 
 The app reconnects to the configured database without restart.
+
+## Generate the wiki
+
+After you have crawled some tweets and circle members, build an Obsidian-flavored markdown vault from the DB.
+
+```bash
+npm run wiki:gen                            # build social-wiki/ from social_circle + circle_tweets
+```
+
+LLM keyword extraction (optional, adds a Topics section per person and a keywords/ index):
+
+```bash
+npm run wiki:setup                          # install/start ollama + pull qwen2.5:3b
+npm run wiki:keywords -- <screen_name>      # one author
+npm run wiki:keywords -- --top 50           # top N authors by tweet count
+npm run wiki:keywords -- --all              # entire circle (long; cached + resumable)
+npm run wiki:flush                          # rebuild keyword pages from cache without re-running model
+```
+
+Cache lives at `.cache/keywords/<screen_name>.jsonl` — per-author, idempotent. Wiki output goes to `social-wiki/` (gitignored). Open that folder as an Obsidian vault to browse.
 
 ## Architecture
 
