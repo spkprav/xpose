@@ -1268,7 +1268,7 @@ ipcRenderer.on('feed-rescore-done', (event, payload) => {
 
 ipcRenderer.on('feed-scores-updated', () => {
   // Auto-refresh feed when background scoring finishes
-  if (document.querySelector('[data-tab="feed"]')?.classList.contains('active')) {
+  if (document.querySelector('[data-tab="reply"]')?.classList.contains('active')) {
     loadFeed();
   }
 });
@@ -1314,8 +1314,8 @@ ipcRenderer.on('feed-score-progress', (event, p) => {
   }
 });
 
-// Load when Feed tab is opened
-document.querySelector('[data-tab="feed"]')?.addEventListener('click', loadFeed);
+// Load when Reply tab is opened
+document.querySelector('[data-tab="reply"]')?.addEventListener('click', loadFeed);
 
 // ═══════════════════════════════════════════════════
 // Init
