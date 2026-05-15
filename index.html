@@ -325,6 +325,12 @@
           <button class="filter-btn" data-source="high-velocity-replies">high-velocity</button>
           <button class="filter-btn" data-source="growth-study">growth-study</button>
         </div>
+        <!-- Time-window toggle: scoring picks tweets from past 3h; UI can widen to 12h -->
+        <div class="feed-filter-group" id="feed-window-chips" style="margin-top:6px;gap:4px">
+          <span class="text-xs text-x-text-secondary" style="margin-right:4px">window:</span>
+          <button class="filter-btn active" data-window="3">3h</button>
+          <button class="filter-btn" data-window="12">12h</button>
+        </div>
       </div>
 
       <div class="sb-toolbar">
@@ -333,6 +339,9 @@
           <input type="checkbox" id="feed-include-actioned" />
           show actioned
         </label>
+        <button id="btn-rescore-feed" class="sb-icon-btn" title="Rescore unscored tweets">
+          <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+        </button>
         <button id="btn-refresh-feed-list" class="sb-icon-btn" title="Refresh">
           <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
         </button>

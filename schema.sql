@@ -418,6 +418,22 @@ CREATE TABLE IF NOT EXISTS circle_tweet_actions (
 CREATE INDEX IF NOT EXISTS idx_circle_tweet_actions_tweet ON circle_tweet_actions(tweet_id);
 CREATE INDEX IF NOT EXISTS idx_circle_tweet_actions_type ON circle_tweet_actions(action_type, action_at DESC);
 
+-- LLM ICP-fit + reply-urgency scores for list-feed tweets.
+-- One row per tweet. `total` is JS-computed weighted mean of per-criterion 0-100 scores.
+-- The LLM never sees or computes the total. `scores` JSONB stores raw per-criterion values.
+CREATE TABLE IF NOT EXISTS list_tweet_scores (
+    tweet_id     BIGINT PRIMARY KEY REFERENCES circle_tweets(id) ON DELETE CASCADE,
+    total        INT  NOT NULL,
+    scores       JSONB NOT NULL,
+    reason       TEXT,
+    model        TEXT,
+    prompt_hash  TEXT,
+    scored_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_list_tweet_scores_total ON list_tweet_scores(total DESC);
+CREATE INDEX IF NOT EXISTS idx_list_tweet_scores_scored_at ON list_tweet_scores(scored_at DESC);
+
 -- Crawl job queue
 CREATE TABLE IF NOT EXISTS crawl_jobs (
     id SERIAL PRIMARY KEY,

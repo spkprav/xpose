@@ -1075,8 +1075,26 @@ document.querySelector('[data-tab="lists"]')?.addEventListener('click', refreshL
 // ═══════════════════════════════════════════════════
 let feedSource = 'all';
 let feedIncludeActioned = false;
+let feedHoursWindow = 3;        // 3h default; togglable to 12h
 let feedRows = [];
 let feedCounts = [];
+
+const FEED_CRITERIA_LABELS = {
+  icp_fit:              'ICP fit',
+  reply_opportunity:    'Reply opp',
+  freshness_window:     'Freshness',
+  signal_quality:       'Signal',
+  voice_match:          'Voice',
+  virality_trajectory:  'Virality',
+};
+
+function scoreColor(total) {
+  if (total == null) return '#71767b';
+  if (total >= 75) return '#f87171';   // red — urgent
+  if (total >= 55) return '#f59e0b';   // amber
+  if (total >= 35) return '#9ca3af';   // gray
+  return '#4b5563';                    // dim
+}
 
 function formatNum(n) {
   n = Number(n) || 0;
@@ -1086,9 +1104,27 @@ function formatNum(n) {
 }
 
 function loadFeed() {
-  ipcRenderer.send('get-list-feed', { slug: feedSource, limit: 200, includeActioned: feedIncludeActioned });
+  ipcRenderer.send('get-list-feed', {
+    slug: feedSource,
+    limit: 200,
+    includeActioned: feedIncludeActioned,
+    hoursWindow: feedHoursWindow,
+  });
   const sum = $('#feed-summary');
   if (sum) sum.textContent = 'Loading…';
+}
+
+function renderScoreChip(t) {
+  if (t.score_total == null) {
+    return `<span class="feed-score-chip feed-score-pending" title="Not scored yet — runs every 5 min">…</span>`;
+  }
+  const breakdown = t.score_breakdown || {};
+  const lines = Object.entries(FEED_CRITERIA_LABELS)
+    .map(([k, label]) => `${label}: ${breakdown[k] ?? '?'}`)
+    .join('\n');
+  const reason = t.score_reason ? `\n\n${t.score_reason}` : '';
+  const tip = `Total ${t.score_total} (weighted)\n${lines}${reason}`;
+  return `<span class="feed-score-chip" style="background:${scoreColor(t.score_total)}" title="${escapeHtml(tip)}">${t.score_total}</span>`;
 }
 
 function renderFeed() {
@@ -1112,7 +1148,8 @@ function renderFeed() {
     }
     btn.classList.toggle('active', src === feedSource);
   });
-  if (sum) sum.textContent = `${feedRows.length} tweet${feedRows.length === 1 ? '' : 's'}${feedIncludeActioned ? ' (including actioned)' : ''}`;
+  const scoredCount = feedRows.filter(r => r.score_total != null).length;
+  if (sum) sum.textContent = `${feedRows.length} tweet${feedRows.length === 1 ? '' : 's'} · ${scoredCount} scored · ${feedHoursWindow}h${feedIncludeActioned ? ' · incl. actioned' : ''}`;
 
   if (!feedRows.length) {
     list.innerHTML = `<p class="text-xs text-x-text-secondary text-center mt-8 px-6 leading-relaxed">No tweets yet for this filter.<br>Crawl a list from the Lists tab.</p>`;
@@ -1123,9 +1160,11 @@ function renderFeed() {
     const ago = ts ? timeAgo(ts.toISOString()) : '—';
     const sources = (t.source_lists || []).map(s => `<span class="feed-src-badge">${s}</span>`).join('');
     const lastAction = t.last_action ? `<span class="feed-action-badge">${t.last_action}</span>` : '';
+    const scoreChip = renderScoreChip(t);
     return `
       <div class="feed-item" data-id="${t.id}" data-handle="${escapeHtml(t.screen_name)}">
         <div class="feed-item-head">
+          ${scoreChip}
           <span class="feed-item-handle">@${escapeHtml(t.screen_name)}</span>
           ${t.relationship ? `<span class="feed-item-rel">${t.relationship}</span>` : ''}
           ${t.followers_count ? `<span class="feed-item-rel">${formatNum(t.followers_count)}f</span>` : ''}
@@ -1199,6 +1238,40 @@ $('#feed-include-actioned')?.addEventListener('change', (e) => {
 });
 
 $('#btn-refresh-feed-list')?.addEventListener('click', loadFeed);
+
+document.querySelectorAll('#feed-window-chips .filter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    feedHoursWindow = Number(btn.dataset.window) || 3;
+    document.querySelectorAll('#feed-window-chips .filter-btn').forEach(b => b.classList.toggle('active', b === btn));
+    loadFeed();
+  });
+});
+
+$('#btn-rescore-feed')?.addEventListener('click', () => {
+  const btn = $('#btn-rescore-feed');
+  if (!btn) return;
+  btn.style.opacity = '0.4';
+  btn.style.pointerEvents = 'none';
+  ipcRenderer.send('rescore-feed', { hoursMax: 3, limit: 100 });
+});
+
+ipcRenderer.on('feed-rescore-done', (event, payload) => {
+  const btn = $('#btn-rescore-feed');
+  if (btn) { btn.style.opacity = ''; btn.style.pointerEvents = ''; }
+  if (payload?.success) {
+    showGlobalStatus(`Scored ${payload.scored || 0} tweet${payload.scored === 1 ? '' : 's'}${payload.failed ? ` (${payload.failed} failed)` : ''}`);
+    loadFeed();
+  } else {
+    showGlobalStatus(`Rescore failed: ${payload?.error || 'unknown'}`);
+  }
+});
+
+ipcRenderer.on('feed-scores-updated', () => {
+  // Auto-refresh feed when background scoring finishes
+  if (document.querySelector('[data-tab="feed"]')?.classList.contains('active')) {
+    loadFeed();
+  }
+});
 
 // Load when Feed tab is opened
 document.querySelector('[data-tab="feed"]')?.addEventListener('click', loadFeed);
