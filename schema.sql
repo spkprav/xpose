@@ -404,6 +404,20 @@ CREATE TABLE IF NOT EXISTS circle_tweet_sources (
 CREATE INDEX IF NOT EXISTS idx_circle_tweet_sources_list ON circle_tweet_sources(source_list, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_circle_tweet_sources_tweet ON circle_tweet_sources(tweet_id);
 
+-- Actions on circle tweets (replied / skipped / hidden / done).
+-- Parallel to tweet_actions because that table FK references tweets(id), not circle_tweets(id).
+CREATE TABLE IF NOT EXISTS circle_tweet_actions (
+    id SERIAL PRIMARY KEY,
+    tweet_id BIGINT NOT NULL REFERENCES circle_tweets(id) ON DELETE CASCADE,
+    action_type VARCHAR(20) NOT NULL,
+    action_content TEXT,
+    action_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (tweet_id, action_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_circle_tweet_actions_tweet ON circle_tweet_actions(tweet_id);
+CREATE INDEX IF NOT EXISTS idx_circle_tweet_actions_type ON circle_tweet_actions(action_type, action_at DESC);
+
 -- Crawl job queue
 CREATE TABLE IF NOT EXISTS crawl_jobs (
     id SERIAL PRIMARY KEY,

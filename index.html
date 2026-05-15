@@ -50,6 +50,7 @@
       <button data-tab="circle"   class="tab-btn active">Circle</button>
       <button data-tab="crawl"    class="tab-btn">Crawl</button>
       <button data-tab="lists"    class="tab-btn">Lists</button>
+      <button data-tab="feed"     class="tab-btn">Feed</button>
       <button data-tab="drafts"   class="tab-btn">Drafts</button>
       <button data-tab="settings" class="tab-btn">Settings</button>
     </nav>
@@ -307,6 +308,38 @@
 
       <!-- Cards -->
       <div id="lists-cards" class="flex-1 overflow-y-auto p-3 space-y-2"></div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════
+         FEED PANEL (tweets captured from X-lists)
+    ════════════════════════════════════════════════════════ -->
+    <div id="panel-feed" class="panel flex-1 flex flex-col overflow-hidden hidden">
+
+      <!-- Toolbar: source-list filter chips -->
+      <div class="sb-feed-filters" style="padding:6px 8px;border-bottom:1px solid #2f3336">
+        <div class="feed-filter-group" id="feed-source-chips" style="flex-wrap:wrap;gap:4px">
+          <button class="filter-btn active" data-source="all">all</button>
+          <button class="filter-btn" data-source="anchors">anchors</button>
+          <button class="filter-btn" data-source="venues">venues</button>
+          <button class="filter-btn" data-source="mutuals-rising">mutuals-rising</button>
+          <button class="filter-btn" data-source="high-velocity-replies">high-velocity</button>
+          <button class="filter-btn" data-source="growth-study">growth-study</button>
+        </div>
+      </div>
+
+      <div class="sb-toolbar">
+        <span id="feed-summary" class="text-xs text-x-text-secondary flex-1">Loading…</span>
+        <label class="text-xs text-x-text-secondary flex items-center gap-1">
+          <input type="checkbox" id="feed-include-actioned" />
+          show actioned
+        </label>
+        <button id="btn-refresh-feed-list" class="sb-icon-btn" title="Refresh">
+          <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+        </button>
+      </div>
+
+      <!-- Tweet list -->
+      <div id="feed-list" class="flex-1 overflow-y-auto p-2 space-y-2"></div>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════

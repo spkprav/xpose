@@ -1097,6 +1097,36 @@ function createWindow() {
     event.sender.send('list-stats', out);
   });
 
+  // ==================
+  // List Feed (read crawled tweets per source_list)
+  // ==================
+  ipcMain.on('get-list-feed', async (event, { slug = 'all', limit = 100, includeActioned = false } = {}) => {
+    try {
+      const rows = await db.getListFeed({ slug, limit, includeActioned });
+      const counts = await db.getListFeedStats();
+      event.sender.send('list-feed-loaded', { success: true, slug, rows, counts });
+    } catch (err) {
+      console.error('[ListFeed] load error:', err.message);
+      event.sender.send('list-feed-loaded', { success: false, error: err.message });
+    }
+  });
+
+  ipcMain.on('circle-tweet-action', async (event, { tweetId, actionType, actionContent }) => {
+    try {
+      const id = await db.recordCircleTweetAction(tweetId, actionType, actionContent || null);
+      event.sender.send('circle-tweet-action-done', { success: true, id, tweetId, actionType });
+    } catch (err) {
+      console.error('[ListFeed] action error:', err.message);
+      event.sender.send('circle-tweet-action-done', { success: false, error: err.message });
+    }
+  });
+
+  ipcMain.on('open-circle-tweet', (event, { tweetId, screenName }) => {
+    if (!tweetId || !screenName) return;
+    const url = `https://x.com/${screenName}/status/${tweetId}`;
+    twitterView.webContents.loadURL(url).catch(() => {});
+  });
+
   ipcMain.on('queue-circle-crawl', async (event, { relationship, relationships } = {}) => {
     try {
       // Accept single relationship string OR array of relationships

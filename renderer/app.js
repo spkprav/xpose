@@ -1071,6 +1071,139 @@ $('#btn-stop-list-crawl')?.addEventListener('click', () => ipcRenderer.send('sto
 document.querySelector('[data-tab="lists"]')?.addEventListener('click', refreshListStats);
 
 // ═══════════════════════════════════════════════════
+// FEED PANEL (tweets captured from X-lists)
+// ═══════════════════════════════════════════════════
+let feedSource = 'all';
+let feedIncludeActioned = false;
+let feedRows = [];
+let feedCounts = [];
+
+function formatNum(n) {
+  n = Number(n) || 0;
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000)     return (n / 1_000).toFixed(1) + 'K';
+  return String(n);
+}
+
+function loadFeed() {
+  ipcRenderer.send('get-list-feed', { slug: feedSource, limit: 200, includeActioned: feedIncludeActioned });
+  const sum = $('#feed-summary');
+  if (sum) sum.textContent = 'Loading…';
+}
+
+function renderFeed() {
+  const list = $('#feed-list');
+  const sum  = $('#feed-summary');
+  if (!list) return;
+  // Filter chip counts
+  const countMap = {};
+  for (const r of feedCounts) countMap[r.source_list] = r;
+  document.querySelectorAll('#feed-source-chips .filter-btn').forEach(btn => {
+    const src = btn.dataset.source;
+    let label = src === 'high-velocity-replies' ? 'high-velocity'
+              : src === 'mutuals-rising' ? 'mutuals-rising'
+              : src;
+    if (src === 'all') {
+      const total = feedCounts.reduce((a, r) => a + r.unactioned, 0);
+      btn.textContent = `all (${total})`;
+    } else {
+      const c = countMap[src];
+      btn.textContent = `${label}${c ? ` (${c.unactioned})` : ''}`;
+    }
+    btn.classList.toggle('active', src === feedSource);
+  });
+  if (sum) sum.textContent = `${feedRows.length} tweet${feedRows.length === 1 ? '' : 's'}${feedIncludeActioned ? ' (including actioned)' : ''}`;
+
+  if (!feedRows.length) {
+    list.innerHTML = `<p class="text-xs text-x-text-secondary text-center mt-8 px-6 leading-relaxed">No tweets yet for this filter.<br>Crawl a list from the Lists tab.</p>`;
+    return;
+  }
+  list.innerHTML = feedRows.map(t => {
+    const ts = t.created_at ? new Date(t.created_at) : null;
+    const ago = ts ? timeAgo(ts.toISOString()) : '—';
+    const sources = (t.source_lists || []).map(s => `<span class="feed-src-badge">${s}</span>`).join('');
+    const lastAction = t.last_action ? `<span class="feed-action-badge">${t.last_action}</span>` : '';
+    return `
+      <div class="feed-item" data-id="${t.id}" data-handle="${escapeHtml(t.screen_name)}">
+        <div class="feed-item-head">
+          <span class="feed-item-handle">@${escapeHtml(t.screen_name)}</span>
+          ${t.relationship ? `<span class="feed-item-rel">${t.relationship}</span>` : ''}
+          ${t.followers_count ? `<span class="feed-item-rel">${formatNum(t.followers_count)}f</span>` : ''}
+          <span class="feed-item-time">${ago}</span>
+        </div>
+        <div class="feed-item-text">${escapeHtml(t.text)}</div>
+        <div class="feed-item-meta">
+          <span title="Likes">♥ ${formatNum(t.like_count)}</span>
+          <span title="Retweets">↻ ${formatNum(t.retweet_count)}</span>
+          <span title="Replies">↳ ${formatNum(t.reply_count)}</span>
+          <span title="Views">👁 ${formatNum(t.view_count)}</span>
+          ${sources}
+          ${lastAction}
+        </div>
+        <div class="feed-item-actions">
+          <button class="feed-btn feed-open"     data-id="${t.id}" data-handle="${escapeHtml(t.screen_name)}">Open</button>
+          <button class="feed-btn feed-replied"  data-id="${t.id}">Replied</button>
+          <button class="feed-btn feed-skipped"  data-id="${t.id}">Skip</button>
+          <button class="feed-btn feed-hidden"   data-id="${t.id}">Hide</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  list.querySelectorAll('.feed-open').forEach(b => b.addEventListener('click', () => {
+    ipcRenderer.send('open-circle-tweet', { tweetId: b.dataset.id, screenName: b.dataset.handle });
+  }));
+  const actMap = { 'feed-replied': 'replied', 'feed-skipped': 'skipped', 'feed-hidden': 'hidden' };
+  Object.entries(actMap).forEach(([cls, action]) => {
+    list.querySelectorAll(`.${cls}`).forEach(b => b.addEventListener('click', () => {
+      ipcRenderer.send('circle-tweet-action', { tweetId: b.dataset.id, actionType: action });
+    }));
+  });
+}
+
+ipcRenderer.on('list-feed-loaded', (event, payload) => {
+  if (!payload?.success) {
+    const sum = $('#feed-summary');
+    if (sum) { sum.textContent = `Error: ${payload?.error || 'unknown'}`; sum.style.color = '#f87171'; }
+    return;
+  }
+  feedRows = payload.rows || [];
+  feedCounts = payload.counts || [];
+  renderFeed();
+});
+
+ipcRenderer.on('circle-tweet-action-done', (event, payload) => {
+  if (!payload?.success) {
+    showGlobalStatus(`Action failed: ${payload?.error || 'unknown'}`);
+    return;
+  }
+  // Optimistic remove from current view if not showing actioned
+  if (!feedIncludeActioned) {
+    feedRows = feedRows.filter(r => String(r.id) !== String(payload.tweetId));
+  }
+  renderFeed();
+  // Refresh counts in background
+  loadFeed();
+});
+
+document.querySelectorAll('#feed-source-chips .filter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    feedSource = btn.dataset.source;
+    loadFeed();
+  });
+});
+
+$('#feed-include-actioned')?.addEventListener('change', (e) => {
+  feedIncludeActioned = e.target.checked;
+  loadFeed();
+});
+
+$('#btn-refresh-feed-list')?.addEventListener('click', loadFeed);
+
+// Load when Feed tab is opened
+document.querySelector('[data-tab="feed"]')?.addEventListener('click', loadFeed);
+
+// ═══════════════════════════════════════════════════
 // Init
 // ═══════════════════════════════════════════════════
 renderProviders();
