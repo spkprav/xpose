@@ -24,6 +24,7 @@ const LIST_META = {
 };
 let activeListSlug = null;
 let listStatsCache = {};
+let fetchAllQueue = [];  // slugs waiting to be opened in sequence
 
 function collectListIds() {
   const out = {};
@@ -1046,6 +1047,12 @@ ipcRenderer.on('list-stats', (event, stats) => {
   renderListCards();
 });
 
+function openListSlug(slug) {
+  const listId = (settings.lists || {})[slug];
+  if (!listId) { showGlobalStatus(`No list ID configured for ${slug}`); return; }
+  ipcRenderer.send('open-list', { slug, listId });
+}
+
 ipcRenderer.on('list-crawl-status', (event, payload) => {
   const { slug, status, message } = payload || {};
   const strip = $('#list-crawl-strip');
@@ -1053,19 +1060,39 @@ ipcRenderer.on('list-crawl-status', (event, payload) => {
   if (status === 'started' || status === 'scrolling') {
     activeListSlug = slug;
     strip?.classList.remove('hidden');
-    if (text) text.textContent = message || `Crawling ${slug}...`;
+    const queueLabel = fetchAllQueue.length ? ` (${fetchAllQueue.length} left)` : '';
+    if (text) text.textContent = (message || `Crawling ${slug}...`) + queueLabel;
   } else if (status === 'stopped' || status === 'done' || status === 'error') {
     activeListSlug = null;
-    strip?.classList.add('hidden');
+    // Pop next from queue if Fetch All is running
+    if (fetchAllQueue.length) {
+      const next = fetchAllQueue.shift();
+      openListSlug(next);
+    } else {
+      strip?.classList.add('hidden');
+    }
     refreshListStats();
   } else if (status === 'progress') {
-    if (text) text.textContent = message || `Crawling ${slug}...`;
+    const queueLabel = fetchAllQueue.length ? ` (${fetchAllQueue.length} left)` : '';
+    if (text) text.textContent = (message || `Crawling ${slug}...`) + queueLabel;
   }
   renderListCards();
 });
 
 $('#btn-refresh-lists')?.addEventListener('click', refreshListStats);
-$('#btn-stop-list-crawl')?.addEventListener('click', () => ipcRenderer.send('stop-list-crawl'));
+$('#btn-stop-list-crawl')?.addEventListener('click', () => {
+  fetchAllQueue = [];  // cancel queue on manual stop
+  ipcRenderer.send('stop-list-crawl');
+});
+
+$('#btn-fetch-all-lists')?.addEventListener('click', () => {
+  if (activeListSlug) { showGlobalStatus('Already crawling, stop first'); return; }
+  const ids = settings.lists || {};
+  const configured = LIST_SLUGS.filter(s => ids[s]);
+  if (!configured.length) { showGlobalStatus('No list IDs configured in Settings'); return; }
+  fetchAllQueue = configured.slice(1);  // remaining after the first
+  openListSlug(configured[0]);
+});
 
 // Refresh stats when Lists tab is opened
 document.querySelector('[data-tab="lists"]')?.addEventListener('click', refreshListStats);

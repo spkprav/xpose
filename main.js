@@ -111,8 +111,8 @@ let listScrollTimer = null;
 let listScrollCount = 0;
 let listCapturedThisRun = 0;
 let listOpenedAt = 0;
-const LIST_MAX_SCROLLS = 25;
-const LIST_SCROLL_INTERVAL_MS = 3500;
+const LIST_BURST_SCROLLS = 2;       // jump-to-bottom twice, enough for 12-24h catchup
+const LIST_BURST_DELAY_MS = 1500;   // gap between bursts to let content load
 const LIST_STOP_GRACE_MS = 2000;  // ignore Stop within N ms of Open (debounce accidental double-click)
 
 const PAGE_PATHS = {
@@ -1103,20 +1103,20 @@ function createWindow() {
     if (!activeListSlug) return;
     listScrollCount++;
     try {
-      await twitterView.webContents.debugger.sendCommand('Input.synthesizeScrollGesture', {
-        x: 400, y: 400, xDistance: 0, yDistance: -3000, speed: 800,
-      });
+      await twitterView.webContents.executeJavaScript('window.scrollTo(0, document.body.scrollHeight)');
     } catch (_) {
       try {
-        await twitterView.webContents.executeJavaScript('window.scrollTo(0, document.body.scrollHeight)');
+        await twitterView.webContents.debugger.sendCommand('Input.synthesizeScrollGesture', {
+          x: 400, y: 400, xDistance: 0, yDistance: -9999, speed: 1200,
+        });
       } catch (_2) {}
     }
-    console.log(`[ListCrawl] ${activeListSlug}: scroll ${listScrollCount}/${LIST_MAX_SCROLLS} (captured ${listCapturedThisRun} so far)`);
-    if (listScrollCount >= LIST_MAX_SCROLLS) {
+    console.log(`[ListCrawl] ${activeListSlug}: burst ${listScrollCount}/${LIST_BURST_SCROLLS} (captured ${listCapturedThisRun} so far)`);
+    if (listScrollCount >= LIST_BURST_SCROLLS) {
       stopListCrawl('done');
       return;
     }
-    listScrollTimer = setTimeout(scrollListOnce, LIST_SCROLL_INTERVAL_MS);
+    listScrollTimer = setTimeout(scrollListOnce, LIST_BURST_DELAY_MS);
   }
 
   ipcMain.on('open-list', async (event, { slug, listId }) => {
@@ -1145,8 +1145,8 @@ function createWindow() {
       stopListCrawl('error');
       return;
     }
-    // First scroll after initial load + render
-    listScrollTimer = setTimeout(scrollListOnce, LIST_SCROLL_INTERVAL_MS * 2);
+    // First burst after initial load + render
+    listScrollTimer = setTimeout(scrollListOnce, 2000);
   });
 
   ipcMain.on('stop-list-crawl', () => {
