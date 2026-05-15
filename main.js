@@ -16,6 +16,7 @@ const { createClient } = require('./lib/llm');
 const db = require('./lib/db');
 const { generateDrafts } = require('./lib/drafts');
 const wikiExport = require('./lib/wiki-export');
+const { scoreUnscoredFeed } = require('./lib/feed/score-tweets');
 
 let win, twitterView, crawlView, settings, llmClient;
 let pendingFetch = false;
@@ -29,6 +30,41 @@ let focusMode = false;
 let crawler = null;
 let fetchingList = false;
 let listCaptured = [];
+
+// Feed scoring state — debounced after crawl, plus a periodic heartbeat.
+let feedScoringRunning = false;
+let feedScoringDebounce = null;
+const FEED_SCORE_DEBOUNCE_MS = 30 * 1000;       // wait 30s after last crawl event
+const FEED_SCORE_HEARTBEAT_MS = 5 * 60 * 1000;  // run every 5min while app open
+const FEED_SCORE_HOURS_MAX = 3;
+const FEED_SCORE_BATCH_LIMIT = 60;
+
+async function runFeedScoring({ hoursMax = FEED_SCORE_HOURS_MAX, limit = FEED_SCORE_BATCH_LIMIT, source = 'auto' } = {}) {
+  if (feedScoringRunning) {
+    console.log(`[FeedScore] skip (${source}) — already running`);
+    return { scored: 0, failed: 0, skipped: 1, total: 0 };
+  }
+  feedScoringRunning = true;
+  const t0 = Date.now();
+  try {
+    const r = await scoreUnscoredFeed({ hoursMax, limit });
+    if (r.total > 0) {
+      console.log(`[FeedScore] ${source} done in ${Math.round((Date.now() - t0) / 1000)}s — scored=${r.scored} failed=${r.failed} of ${r.total}`);
+      if (win && !win.isDestroyed()) win.webContents.send('feed-scores-updated', r);
+    }
+    return r;
+  } catch (err) {
+    console.error('[FeedScore] error:', err.message);
+    return { scored: 0, failed: 0, skipped: 0, total: 0, error: err.message };
+  } finally {
+    feedScoringRunning = false;
+  }
+}
+
+function scheduleFeedScoring(source = 'auto') {
+  clearTimeout(feedScoringDebounce);
+  feedScoringDebounce = setTimeout(() => runFeedScoring({ source }), FEED_SCORE_DEBOUNCE_MS);
+}
 
 // X-list crawl state (Lists tab)
 let activeListSlug = null;
@@ -139,6 +175,8 @@ function createWindow() {
     },
     onFeedRefresh: () => {
       if (win && !win.isDestroyed()) win.webContents.send('feed-refresh-available');
+      // Newly captured list tweets → schedule a scoring pass.
+      scheduleFeedScoring('crawl');
     },
   });
 
@@ -1098,16 +1136,27 @@ function createWindow() {
   });
 
   // ==================
-  // List Feed (read crawled tweets per source_list)
+  // List Feed (read crawled tweets per source_list, joined with LLM scores)
   // ==================
-  ipcMain.on('get-list-feed', async (event, { slug = 'all', limit = 100, includeActioned = false } = {}) => {
+  ipcMain.on('get-list-feed', async (event, { slug = 'all', limit = 200, includeActioned = false, hoursWindow = 3 } = {}) => {
     try {
-      const rows = await db.getListFeed({ slug, limit, includeActioned });
+      const rows = await db.getListFeedScored({ slug, limit, includeActioned, hoursWindow });
       const counts = await db.getListFeedStats();
-      event.sender.send('list-feed-loaded', { success: true, slug, rows, counts });
+      event.sender.send('list-feed-loaded', { success: true, slug, rows, counts, hoursWindow });
     } catch (err) {
       console.error('[ListFeed] load error:', err.message);
       event.sender.send('list-feed-loaded', { success: false, error: err.message });
+    }
+  });
+
+  // Manual rescore trigger from renderer
+  ipcMain.on('rescore-feed', async (event, { hoursMax = 3, limit = 100 } = {}) => {
+    try {
+      const r = await runFeedScoring({ hoursMax, limit, source: 'manual' });
+      event.sender.send('feed-rescore-done', { success: true, ...r });
+    } catch (err) {
+      console.error('[FeedScore] manual error:', err.message);
+      event.sender.send('feed-rescore-done', { success: false, error: err.message });
     }
   });
 
@@ -1425,6 +1474,11 @@ app.whenReady().then(async () => {
     console.error('[Boot] resetAllRunningOnBoot failed:', err.message);
   }
   createWindow();
+
+  // Periodic feed-scoring heartbeat. First run after 60s so app finishes booting,
+  // then every FEED_SCORE_HEARTBEAT_MS.
+  setTimeout(() => runFeedScoring({ source: 'boot' }), 60 * 1000);
+  setInterval(() => runFeedScoring({ source: 'heartbeat' }), FEED_SCORE_HEARTBEAT_MS);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

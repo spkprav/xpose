@@ -803,6 +803,28 @@ textarea:focus {
   border-radius: 3px;
   font-size: 10px;
 }
+.feed-score-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #0b0b0b;
+  margin-right: 6px;
+  cursor: help;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.feed-score-pending {
+  background: transparent;
+  color: #71767b;
+  border: 1px dashed #2f3336;
+  font-weight: 400;
+}
 .feed-item-actions {
   display: flex;
   gap: 4px;
