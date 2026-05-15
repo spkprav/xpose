@@ -35,8 +35,10 @@ let activeListSlug = null;
 let listScrollTimer = null;
 let listScrollCount = 0;
 let listCapturedThisRun = 0;
+let listOpenedAt = 0;
 const LIST_MAX_SCROLLS = 25;
 const LIST_SCROLL_INTERVAL_MS = 3500;
+const LIST_STOP_GRACE_MS = 2000;  // ignore Stop within N ms of Open (debounce accidental double-click)
 
 const PAGE_PATHS = {
   '/HomeTimeline': 'for-you',
@@ -613,7 +615,13 @@ function createWindow() {
       const url = params.request.url;
       const pagePath = getPagePathFromUrl(url);
       if (pagePath) {
-        requestMap.set(params.requestId, { url, pagePath });
+        // Capture activeListSlug at REQUEST time so in-flight responses from a
+        // previous list don't get tagged with the new active slug after switch.
+        requestMap.set(params.requestId, {
+          url,
+          pagePath,
+          listSlug: pagePath === 'list' ? activeListSlug : null,
+        });
       }
       // Also intercept Followers/Following when list fetch is active
       if (fetchingList && (url.includes('/Followers') || url.includes('/Following'))) {
@@ -663,17 +671,23 @@ function createWindow() {
         const jsonResponse = JSON.parse(response.body);
 
         // Lists tab: tag tweets from active X-list with source provenance.
-        // Runs alongside the standard pagePath flow without interfering with it.
-        if (requestInfo.pagePath === 'list' && activeListSlug && crawler) {
+        // Uses the slug captured at REQUEST time (requestInfo.listSlug) so a
+        // late response from list A doesn't get tagged as list B after switch.
+        if (requestInfo.pagePath === 'list' && requestInfo.listSlug && crawler) {
           try {
             const data = jsonResponse.data || jsonResponse;
-            const result = await crawler.ingestListResponse(data, activeListSlug);
-            listCapturedThisRun += result.saved || 0;
-            win?.webContents.send('list-crawl-status', {
-              slug: activeListSlug,
-              status: 'progress',
-              message: `${activeListSlug}: ${listCapturedThisRun} new (scroll ${listScrollCount})`,
-            });
+            const result = await crawler.ingestListResponse(data, requestInfo.listSlug);
+            // Only count toward the current run if the slug still matches what's active.
+            if (requestInfo.listSlug === activeListSlug) {
+              listCapturedThisRun += result.saved || 0;
+              win?.webContents.send('list-crawl-status', {
+                slug: activeListSlug,
+                status: 'progress',
+                message: `${activeListSlug}: ${listCapturedThisRun} new (scroll ${listScrollCount})`,
+              });
+            } else {
+              console.log(`[ListCrawl] late response for ${requestInfo.listSlug} (now ${activeListSlug || 'idle'}): saved ${result.saved || 0}`);
+            }
           } catch (err) {
             console.error('[ListCrawl] ingest error:', err.message);
           }
@@ -993,17 +1007,19 @@ function createWindow() {
   function stopListCrawl(reason = 'stopped') {
     if (listScrollTimer) { clearTimeout(listScrollTimer); listScrollTimer = null; }
     const slug = activeListSlug;
+    const finalScrolls = listScrollCount;
+    const finalCaptured = listCapturedThisRun;
     activeListSlug = null;
     listScrollCount = 0;
+    listCapturedThisRun = 0;
     if (slug) {
-      console.log(`[ListCrawl] ${slug}: ${reason}. captured ${listCapturedThisRun} new tweets across ${listScrollCount} scrolls`);
+      console.log(`[ListCrawl] ${slug}: ${reason}. captured ${finalCaptured} new tweets across ${finalScrolls} scrolls`);
       win?.webContents.send('list-crawl-status', {
         slug,
-        status: reason === 'done' ? 'done' : 'stopped',
-        message: `${slug}: ${reason} (${listCapturedThisRun} new)`,
+        status: reason === 'done' ? 'done' : (reason === 'error' ? 'error' : 'stopped'),
+        message: `${slug}: ${reason} (${finalCaptured} new, ${finalScrolls} scrolls)`,
       });
     }
-    listCapturedThisRun = 0;
   }
 
   async function scrollListOnce() {
@@ -1018,6 +1034,7 @@ function createWindow() {
         await twitterView.webContents.executeJavaScript('window.scrollTo(0, document.body.scrollHeight)');
       } catch (_2) {}
     }
+    console.log(`[ListCrawl] ${activeListSlug}: scroll ${listScrollCount}/${LIST_MAX_SCROLLS} (captured ${listCapturedThisRun} so far)`);
     if (listScrollCount >= LIST_MAX_SCROLLS) {
       stopListCrawl('done');
       return;
@@ -1030,10 +1047,16 @@ function createWindow() {
       event.sender.send('list-crawl-status', { slug, status: 'error', message: 'Missing slug or list id' });
       return;
     }
+    // Same slug already active = no-op (guards against accidental re-click).
+    if (activeListSlug === slug) {
+      console.log(`[ListCrawl] ${slug} already active, ignoring re-open`);
+      return;
+    }
     if (activeListSlug) stopListCrawl('stopped');
     activeListSlug = slug;
     listScrollCount = 0;
     listCapturedThisRun = 0;
+    listOpenedAt = Date.now();
     const url = `https://x.com/i/lists/${listId}`;
     console.log(`[ListCrawl] starting ${slug} -> ${url}`);
     event.sender.send('list-crawl-status', { slug, status: 'started', message: `Loading ${slug}...` });
@@ -1050,6 +1073,12 @@ function createWindow() {
   });
 
   ipcMain.on('stop-list-crawl', () => {
+    // Debounce: if user just opened, ignore Stop within grace window
+    // (mitigates accidental double-click on the card where Open re-renders into Stop).
+    if (activeListSlug && Date.now() - listOpenedAt < LIST_STOP_GRACE_MS) {
+      console.log(`[ListCrawl] ignoring Stop within grace (${Date.now() - listOpenedAt}ms since open)`);
+      return;
+    }
     stopListCrawl('stopped');
   });
 

@@ -1015,23 +1015,25 @@ function renderListCards() {
         </div>
         <div class="list-card-actions">
           ${isActive
-            ? `<button class="sb-action-link list-stop-btn" data-slug="${slug}">Stop</button>`
+            ? `<span class="text-x-text-secondary text-xs" style="font-style:italic">crawling… (use Stop in the status strip above)</span>`
             : `<button class="sb-btn-primary list-open-btn" data-slug="${slug}" ${configured ? '' : 'disabled'}>Open &amp; crawl</button>`}
         </div>
       </div>
     `;
   }).join('');
 
+  // Stop intentionally lives ONLY in the strip (#btn-stop-list-crawl) — not on the
+  // card — to avoid a double-click trap where Open re-renders into Stop at the
+  // same screen position.
   container.querySelectorAll('.list-open-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const slug = btn.dataset.slug;
       const listId = (settings.lists || {})[slug];
       if (!listId) { showGlobalStatus('Set the list ID in Settings first'); return; }
+      btn.disabled = true;
+      btn.textContent = 'Loading…';
       ipcRenderer.send('open-list', { slug, listId });
     });
-  });
-  container.querySelectorAll('.list-stop-btn').forEach(btn => {
-    btn.addEventListener('click', () => ipcRenderer.send('stop-list-crawl'));
   });
 }
 
