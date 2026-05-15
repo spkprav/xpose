@@ -392,6 +392,18 @@ CREATE INDEX IF NOT EXISTS idx_circle_tweets_screen_name ON circle_tweets(screen
 CREATE INDEX IF NOT EXISTS idx_circle_tweets_created_at ON circle_tweets(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_circle_tweets_reply_to ON circle_tweets(in_reply_to_screen_name);
 
+-- Provenance: which X-list(s) a circle tweet was captured from.
+-- Many-to-many: same tweet can appear in venues + mutuals-rising = 2 rows.
+CREATE TABLE IF NOT EXISTS circle_tweet_sources (
+    tweet_id BIGINT NOT NULL REFERENCES circle_tweets(id) ON DELETE CASCADE,
+    source_list VARCHAR(50) NOT NULL,
+    captured_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (tweet_id, source_list)
+);
+
+CREATE INDEX IF NOT EXISTS idx_circle_tweet_sources_list ON circle_tweet_sources(source_list, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_circle_tweet_sources_tweet ON circle_tweet_sources(tweet_id);
+
 -- Crawl job queue
 CREATE TABLE IF NOT EXISTS crawl_jobs (
     id SERIAL PRIMARY KEY,
