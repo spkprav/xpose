@@ -16,7 +16,7 @@ const { createClient } = require('./lib/llm');
 const db = require('./lib/db');
 const { generateDrafts } = require('./lib/drafts');
 const wikiExport = require('./lib/wiki-export');
-const { scoreUnscoredFeed } = require('./lib/feed/score-tweets');
+const { scoreUnscoredFeed, setConfig: setScorerConfig } = require('./lib/feed/score-tweets');
 
 let win, twitterView, crawlView, settings, llmClient;
 let pendingFetch = false;
@@ -39,22 +39,61 @@ const FEED_SCORE_HEARTBEAT_MS = 5 * 60 * 1000;  // run every 5min while app open
 const FEED_SCORE_HOURS_MAX = 3;
 const FEED_SCORE_BATCH_LIMIT = 60;
 
+function syncScorerConfig() {
+  if (!settings) return;
+  const ollama = settings.get('ollama') || {};
+  setScorerConfig({
+    baseUrl:     ollama.baseUrl  || 'http://localhost:11434',
+    textModel:   ollama.scoreModel  || 'llama3:latest',
+    visionUrl:   ollama.visionUrl   || ollama.baseUrl || null,
+    visionModel: ollama.visionModel || 'qwen2.5vl:7b',
+    enableVision: ollama.enableVision !== false,
+  });
+}
+
+function emitFeedProgress(payload) {
+  if (win && !win.isDestroyed()) win.webContents.send('feed-score-progress', payload);
+}
+
 async function runFeedScoring({ hoursMax = FEED_SCORE_HOURS_MAX, limit = FEED_SCORE_BATCH_LIMIT, source = 'auto' } = {}) {
   if (feedScoringRunning) {
     console.log(`[FeedScore] skip (${source}) — already running`);
+    emitFeedProgress({ phase: 'skip', source });
     return { scored: 0, failed: 0, skipped: 1, total: 0 };
   }
+  syncScorerConfig();
   feedScoringRunning = true;
   const t0 = Date.now();
+  emitFeedProgress({ phase: 'start', source });
   try {
-    const r = await scoreUnscoredFeed({ hoursMax, limit });
+    const r = await scoreUnscoredFeed({
+      hoursMax,
+      limit,
+      onStart:       (n) => emitFeedProgress({ phase: 'queued', total: n, source }),
+      onTweetStart:  (i, n, t) => emitFeedProgress({
+        phase: 'tweet-start', i, n, source,
+        tweet: { id: String(t.id), screen_name: t.screen_name },
+      }),
+      onTweetDone:   (i, n, res) => emitFeedProgress({
+        phase: 'tweet-done', i, n, source,
+        result: { id: String(res.id), screen_name: res.screen_name, total: res.total },
+      }),
+      onTweetError:  (i, n, t, e) => emitFeedProgress({
+        phase: 'tweet-error', i, n, source,
+        tweet: { id: String(t.id), screen_name: t.screen_name },
+        error: e.message,
+      }),
+    });
+    const elapsedSec = Math.round((Date.now() - t0) / 1000);
     if (r.total > 0) {
-      console.log(`[FeedScore] ${source} done in ${Math.round((Date.now() - t0) / 1000)}s — scored=${r.scored} failed=${r.failed} of ${r.total}`);
-      if (win && !win.isDestroyed()) win.webContents.send('feed-scores-updated', r);
+      console.log(`[FeedScore] ${source} done in ${elapsedSec}s — scored=${r.scored} failed=${r.failed} of ${r.total}`);
     }
+    emitFeedProgress({ phase: 'done', source, ...r, elapsedSec });
+    if (win && !win.isDestroyed()) win.webContents.send('feed-scores-updated', r);
     return r;
   } catch (err) {
     console.error('[FeedScore] error:', err.message);
+    emitFeedProgress({ phase: 'error', source, error: err.message });
     return { scored: 0, failed: 0, skipped: 0, total: 0, error: err.message };
   } finally {
     feedScoringRunning = false;

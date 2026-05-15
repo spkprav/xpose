@@ -825,6 +825,28 @@ textarea:focus {
   border: 1px dashed #2f3336;
   font-weight: 400;
 }
+.feed-score-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: rgba(245, 158, 11, 0.08);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.25);
+  color: #f59e0b;
+}
+.feed-score-strip.hidden { display: none; }
+.feed-score-strip-pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f59e0b;
+  animation: feed-score-pulse 1.1s ease-in-out infinite;
+  flex-shrink: 0;
+}
+@keyframes feed-score-pulse {
+  0%,100% { opacity: 1; transform: scale(1); }
+  50%     { opacity: 0.35; transform: scale(0.7); }
+}
 .feed-item-actions {
   display: flex;
   gap: 4px;

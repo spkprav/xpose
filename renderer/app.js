@@ -1273,6 +1273,47 @@ ipcRenderer.on('feed-scores-updated', () => {
   }
 });
 
+// Live scoring progress strip
+let feedScoreStripHideTimer = null;
+ipcRenderer.on('feed-score-progress', (event, p) => {
+  const strip = $('#feed-score-strip');
+  const txt   = $('#feed-score-strip-text');
+  const cnt   = $('#feed-score-strip-count');
+  if (!strip || !txt || !cnt) return;
+  clearTimeout(feedScoreStripHideTimer);
+
+  if (p.phase === 'start' || p.phase === 'queued') {
+    strip.classList.remove('hidden');
+    txt.textContent = p.total === 0
+      ? 'No new tweets to score'
+      : `Scoring ${p.total != null ? p.total : '…'} tweet${p.total === 1 ? '' : 's'}`;
+    cnt.textContent = '';
+    if (p.phase === 'queued' && p.total === 0) {
+      feedScoreStripHideTimer = setTimeout(() => strip.classList.add('hidden'), 1500);
+    }
+  } else if (p.phase === 'tweet-start') {
+    strip.classList.remove('hidden');
+    txt.textContent = `Scoring @${p.tweet.screen_name}`;
+    cnt.textContent = `${p.i}/${p.n}`;
+  } else if (p.phase === 'tweet-done') {
+    cnt.textContent = `${p.i}/${p.n} · last ${p.result.total}`;
+  } else if (p.phase === 'tweet-error') {
+    cnt.textContent = `${p.i}/${p.n} · err`;
+  } else if (p.phase === 'done') {
+    txt.textContent = p.total === 0
+      ? 'No new tweets to score'
+      : `Scored ${p.scored}/${p.total}${p.failed ? ` · ${p.failed} failed` : ''} in ${p.elapsedSec}s`;
+    cnt.textContent = '';
+    feedScoreStripHideTimer = setTimeout(() => strip.classList.add('hidden'), 4000);
+  } else if (p.phase === 'error') {
+    txt.textContent = `Score error: ${p.error}`;
+    cnt.textContent = '';
+    feedScoreStripHideTimer = setTimeout(() => strip.classList.add('hidden'), 6000);
+  } else if (p.phase === 'skip') {
+    // Already running — ignore
+  }
+});
+
 // Load when Feed tab is opened
 document.querySelector('[data-tab="feed"]')?.addEventListener('click', loadFeed);
 
