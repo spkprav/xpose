@@ -44,7 +44,7 @@ function syncScorerConfig() {
   const ollama = settings.get('ollama') || {};
   setScorerConfig({
     baseUrl:     ollama.baseUrl  || 'http://localhost:11434',
-    textModel:   ollama.scoreModel  || 'llama3:latest',
+    textModel:   ollama.scoreModel  || 'qwen2.5vl:7b',
     visionUrl:   ollama.visionUrl   || ollama.baseUrl || null,
     visionModel: ollama.visionModel || 'qwen2.5vl:7b',
     enableVision: ollama.enableVision !== false,
