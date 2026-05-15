@@ -48,6 +48,7 @@
     <!-- ── Tab strip ──────────────────────────────────────── -->
     <nav class="sb-tabs">
       <button data-tab="circle"   class="tab-btn active">Circle</button>
+      <button data-tab="crawl"    class="tab-btn">Crawl</button>
       <button data-tab="drafts"   class="tab-btn">Drafts</button>
       <button data-tab="settings" class="tab-btn">Settings</button>
     </nav>
@@ -161,6 +162,124 @@
         <button id="btn-start-crawl"></button>
         <div id="crawl-progress-bar-wrap"><div id="crawl-progress-bar"></div></div>
         <span id="crawl-status-text"></span>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════
+         CRAWL PANEL
+    ════════════════════════════════════════════════════════ -->
+    <div id="panel-crawl" class="panel flex-1 flex flex-col overflow-hidden hidden">
+      <div class="p-3 overflow-y-auto flex-1" style="font-size:12px">
+
+        <h2 class="settings-heading">Mode</h2>
+        <div class="crawl-chip-group" style="margin-bottom:10px">
+          <button class="crawl-chip" data-crawl-mode="generic">Generic</button>
+          <button class="crawl-chip active" data-crawl-mode="deep">Deep (strict priority)</button>
+        </div>
+
+        <div id="crawl-mode-deep">
+          <h2 class="settings-heading">Filters</h2>
+          <div class="flex gap-2" style="margin-bottom:6px">
+            <label class="flex-1">
+              <span class="text-x-text-secondary text-xs">Date cutoff</span>
+              <input id="deep-date-cutoff" type="date" value="2026-03-01" class="sb-input w-full" />
+            </label>
+            <label style="width:80px">
+              <span class="text-x-text-secondary text-xs">Recent days</span>
+              <input id="deep-recent-days" type="number" value="7" min="1" max="30" class="sb-input w-full" />
+            </label>
+          </div>
+
+          <h2 class="settings-heading">Stop conditions</h2>
+          <div class="flex gap-2" style="margin-bottom:6px">
+            <label class="flex-1">
+              <span class="text-x-text-secondary text-xs">Tweet cap</span>
+              <input id="deep-target-tweets" type="number" value="200" class="sb-input w-full" />
+            </label>
+            <label class="flex-1">
+              <span class="text-x-text-secondary text-xs">Skip first N</span>
+              <input id="deep-min-skip" type="number" value="4" class="sb-input w-full" />
+            </label>
+          </div>
+          <div class="flex gap-2" style="margin-bottom:10px">
+            <label class="flex-1">
+              <span class="text-x-text-secondary text-xs">Zero-delta exit</span>
+              <input id="deep-zero-break" type="number" value="4" class="sb-input w-full" />
+            </label>
+            <label class="flex-1">
+              <span class="text-x-text-secondary text-xs">Scroll ceiling</span>
+              <input id="deep-max-scrolls" type="number" value="60" class="sb-input w-full" />
+            </label>
+          </div>
+
+          <h2 class="settings-heading">Target set</h2>
+          <p class="text-x-text-secondary text-xs" style="margin:0 0 6px 0">
+            Strict priority = non-2°, replied to others in last N days, earliest tweet after cutoff.
+          </p>
+          <button id="btn-preview-deep-targets" class="sb-btn-ghost w-full" style="margin-bottom:6px">Preview targets</button>
+          <div id="deep-preview" class="text-xs" style="background:#16181c;padding:8px;border-radius:6px;margin-bottom:10px;min-height:40px;color:#71767b">
+            No preview yet
+          </div>
+
+          <div class="flex gap-2" style="margin-bottom:10px">
+            <button id="btn-enqueue-deep" class="sb-btn-primary flex-1">Enqueue</button>
+            <button id="btn-start-deep-crawl" class="sb-btn-primary flex-1">Start crawl</button>
+          </div>
+          <div class="flex gap-2" style="margin-bottom:10px">
+            <button id="btn-pause-deep" class="sb-btn-ghost flex-1">Pause</button>
+            <button id="btn-resume-deep" class="sb-btn-ghost flex-1">Resume</button>
+            <button id="btn-stop-deep" class="sb-btn-ghost flex-1">Stop</button>
+          </div>
+
+          <h2 class="settings-heading">Status</h2>
+          <div id="deep-status" class="text-xs" style="background:#16181c;padding:8px;border-radius:6px;color:#e7e9ea">
+            idle
+          </div>
+
+          <h2 class="settings-heading">Live log</h2>
+          <div id="deep-log" class="text-xs font-mono" style="background:#16181c;padding:8px;border-radius:6px;height:180px;overflow-y:auto;color:#71767b;line-height:1.5">
+            (no events yet)
+          </div>
+        </div>
+
+        <!-- Crawl groups accordion -->
+        <h2 class="settings-heading" style="margin-top:16px">Crawl groups</h2>
+        <div class="flex items-center gap-2" style="margin-bottom:8px">
+          <button id="btn-refresh-crawl-groups" class="sb-btn-ghost text-xs">↻ Refresh counts</button>
+          <span id="crawl-groups-summary" class="text-x-text-secondary text-xs"></span>
+        </div>
+
+        <details class="sb-accordion" style="background:#16181c;border-radius:6px;margin-bottom:6px;padding:8px">
+          <summary class="text-xs" style="cursor:pointer;color:#e7e9ea">
+            Following with missing profile · <span id="cnt-following-zerozero" class="text-x-text-secondary">—</span>
+          </summary>
+          <p class="text-x-text-secondary text-xs" style="margin:6px 0">
+            Accounts you follow that never got enriched. Deep crawl: full profile + paginated tweets.
+          </p>
+          <button id="btn-queue-following-zerozero" class="sb-btn-primary text-xs">Queue deep crawl</button>
+        </details>
+
+        <details class="sb-accordion" style="background:#16181c;border-radius:6px;margin-bottom:6px;padding:8px">
+          <summary class="text-xs" style="cursor:pointer;color:#e7e9ea">
+            2nd-degree shallow · <span id="cnt-second-degree-zerozero" class="text-x-text-secondary">—</span>
+          </summary>
+          <p class="text-x-text-secondary text-xs" style="margin:6px 0">
+            People your circle interacts with but you don't follow. Shallow crawl: profile + first batch only, no scroll.
+          </p>
+          <button id="btn-queue-2nd-degree-shallow" class="sb-btn-primary text-xs">Queue shallow crawl</button>
+        </details>
+
+        <details class="sb-accordion" style="background:#16181c;border-radius:6px;margin-bottom:6px;padding:8px">
+          <summary class="text-xs" style="cursor:pointer;color:#e7e9ea">
+            Reply targets with zero tweets · <span id="cnt-reply-targets-no-tweets" class="text-x-text-secondary">—</span>
+          </summary>
+          <p class="text-x-text-secondary text-xs" style="margin:6px 0">
+            Accounts your circle replies to where we have ZERO tweets stored from them. Skips anyone we already have ≥1 tweet for. Shallow crawl: profile + first batch.
+          </p>
+          <button id="btn-queue-reply-targets" class="sb-btn-primary text-xs">Queue shallow crawl</button>
+        </details>
+
+        <div id="crawl-groups-log" class="text-xs font-mono" style="background:#16181c;padding:8px;border-radius:6px;margin-top:8px;min-height:24px;color:#71767b"></div>
       </div>
     </div>
 

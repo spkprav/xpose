@@ -1,5 +1,11 @@
 const path = require('path');
 const { app, BrowserWindow, BrowserView, ipcMain, session, Notification, powerSaveBlocker } = require('electron');
+
+// Keep renderer responsive when window is minimized / hidden / occluded.
+// Without these, Chromium throttles JS timers + rAF, breaking crawler pagination scrolls.
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 const fs = require('fs');
 const TweetProcessor = require('./lib/twitter');
 const ProfileCrawler = require('./lib/twitter/crawler');
@@ -78,6 +84,7 @@ function createWindow() {
       contextIsolation: true,
       preload: path.resolve(app.getAppPath(), 'preload.js'),
       session: ses,
+      backgroundThrottling: false,
     },
   });
 
@@ -87,6 +94,7 @@ function createWindow() {
       nodeIntegration: false,
       contextIsolation: true,
       session: ses,
+      backgroundThrottling: false,
     },
   });
   win.addBrowserView(crawlView);  // bottom layer
@@ -109,6 +117,14 @@ function createWindow() {
         powerSaveBlocker.stop(powerBlockerId);
         powerBlockerId = null;
         console.log('[Power] App suspension unblocked');
+      }
+      // Swap top BrowserView so crawlView gets viewport focus (better pagination triggers)
+      if (win && !win.isDestroyed() && twitterView && crawlView) {
+        if (status.state === 'crawling') {
+          win.setTopBrowserView(crawlView);
+        } else if (status.state === 'idle' || status.state === 'paused') {
+          win.setTopBrowserView(twitterView);
+        }
       }
     },
     onFeedRefresh: () => {
@@ -991,6 +1007,149 @@ function createWindow() {
   });
 
   // ==================
+  // Deep Crawl (strict-priority)
+  // ==================
+  ipcMain.on('get-deep-priority-preview', async (event, opts = {}) => {
+    try {
+      const targets = await db.getStrictPriorityTargets({
+        dateCutoff: opts.dateCutoff || '2026-03-01',
+        recentDays: opts.recentDays || 7,
+      });
+      win.webContents.send('deep-priority-preview', {
+        success: true,
+        count: targets.length,
+        sample: targets.slice(0, 10),
+      });
+    } catch (err) {
+      win.webContents.send('deep-priority-preview', { success: false, error: err.message });
+    }
+  });
+
+  ipcMain.on('enqueue-deep-priority', async (event, opts = {}) => {
+    try {
+      const targets = await db.getStrictPriorityTargets({
+        dateCutoff: opts.dateCutoff || '2026-03-01',
+        recentDays: opts.recentDays || 7,
+      });
+      const cleared = await db.clearPendingDeepJobs();
+      const screenNames = targets.map(t => t.screen_name).filter(Boolean);
+      const queued = await db.enqueueDeepCrawlForScreenNames(screenNames);
+      console.log(`[DeepQueue] Cleared ${cleared} pending. Enqueued ${queued} deep jobs.`);
+      win.webContents.send('deep-priority-enqueued', { success: true, queued, cleared });
+    } catch (err) {
+      console.error('[DeepQueue] Failed:', err.message);
+      win.webContents.send('deep-priority-enqueued', { success: false, error: err.message });
+    }
+  });
+
+  ipcMain.on('set-deep-config', (event, cfg) => {
+    if (crawler && cfg) crawler.setDeepConfig(cfg);
+  });
+
+  // ==================
+  // Crawl group stats (counts for the accordion in Crawl tab)
+  // ==================
+  ipcMain.on('get-crawl-groups', async () => {
+    try {
+      const pool = db.getPool();
+      const { rows } = await pool.query(`
+        WITH zero_following AS (
+          SELECT screen_name FROM social_circle
+          WHERE relationship='following' AND followers_count=0 AND following_count=0 AND screen_name IS NOT NULL
+        ),
+        zero_2nd AS (
+          SELECT screen_name FROM social_circle
+          WHERE relationship='2nd_degree' AND followers_count=0 AND following_count=0 AND screen_name IS NOT NULL
+        ),
+        reply_targets_no_tweets AS (
+          SELECT DISTINCT ct.in_reply_to_screen_name AS screen_name
+          FROM circle_tweets ct
+          WHERE ct.in_reply_to_screen_name IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM circle_tweets ct2
+              WHERE ct2.screen_name = ct.in_reply_to_screen_name
+            )
+        )
+        SELECT
+          (SELECT COUNT(*) FROM zero_following)            AS following_zerozero,
+          (SELECT COUNT(*) FROM zero_2nd)                  AS second_degree_zerozero,
+          (SELECT COUNT(*) FROM reply_targets_no_tweets)   AS reply_targets_no_tweets
+      `);
+      win.webContents.send('crawl-groups-loaded', { success: true, counts: rows[0] });
+    } catch (err) {
+      console.error('[CrawlGroups] Failed:', err.message);
+      win.webContents.send('crawl-groups-loaded', { success: false, error: err.message });
+    }
+  });
+
+  // ==================
+  // Queue handlers per accordion group (dedup against existing pending of same job_type)
+  // ==================
+  async function _queueGroup(jobType, screenNames) {
+    if (!screenNames.length) return { queued: 0, skipped: 0 };
+    const pool = db.getPool();
+    const { rows: existing } = await pool.query(
+      `SELECT target_screen_name FROM crawl_jobs
+       WHERE job_type = $1 AND status IN ('pending','running')
+         AND target_screen_name = ANY($2::text[])`,
+      [jobType, screenNames]
+    );
+    const skip = new Set(existing.map(r => r.target_screen_name));
+    const fresh = screenNames.filter(n => !skip.has(n));
+    if (!fresh.length) return { queued: 0, skipped: screenNames.length };
+    const jobs = fresh.map(n => ({ job_type: jobType, target_screen_name: n }));
+    const queued = await db.insertCrawlJobsBulk(jobs);
+    return { queued, skipped: screenNames.length - fresh.length };
+  }
+
+  ipcMain.on('queue-following-zerozero', async () => {
+    try {
+      const pool = db.getPool();
+      const { rows } = await pool.query(`
+        SELECT screen_name FROM social_circle
+        WHERE relationship='following' AND followers_count=0 AND following_count=0 AND screen_name IS NOT NULL
+      `);
+      const result = await _queueGroup('user_tweets_deep', rows.map(r => r.screen_name));
+      win.webContents.send('crawl-group-queued', { group: 'following_zerozero', success: true, ...result });
+    } catch (err) {
+      win.webContents.send('crawl-group-queued', { group: 'following_zerozero', success: false, error: err.message });
+    }
+  });
+
+  ipcMain.on('queue-2nd-degree-shallow', async () => {
+    try {
+      const pool = db.getPool();
+      const { rows } = await pool.query(`
+        SELECT screen_name FROM social_circle
+        WHERE relationship='2nd_degree' AND followers_count=0 AND following_count=0 AND screen_name IS NOT NULL
+      `);
+      const result = await _queueGroup('user_tweets_shallow', rows.map(r => r.screen_name));
+      win.webContents.send('crawl-group-queued', { group: 'second_degree_shallow', success: true, ...result });
+    } catch (err) {
+      win.webContents.send('crawl-group-queued', { group: 'second_degree_shallow', success: false, error: err.message });
+    }
+  });
+
+  ipcMain.on('queue-reply-targets', async () => {
+    try {
+      const pool = db.getPool();
+      const { rows } = await pool.query(`
+        SELECT DISTINCT ct.in_reply_to_screen_name AS screen_name
+        FROM circle_tweets ct
+        WHERE ct.in_reply_to_screen_name IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM circle_tweets ct2
+            WHERE ct2.screen_name = ct.in_reply_to_screen_name
+          )
+      `);
+      const result = await _queueGroup('user_tweets_shallow', rows.map(r => r.screen_name));
+      win.webContents.send('crawl-group-queued', { group: 'reply_targets', success: true, ...result });
+    } catch (err) {
+      win.webContents.send('crawl-group-queued', { group: 'reply_targets', success: false, error: err.message });
+    }
+  });
+
+  // ==================
   // Load Social Circle
   // ==================
   ipcMain.on('load-social-circle', async () => {
@@ -1085,13 +1244,21 @@ function resizeTwitterView() {
   // crawlView gets same space so it has a real rendered viewport under twitterView
   if (crawlView) {
     crawlView.setBounds({ x: 0, y: 0, width: twitterWidth, height: bounds.height });
-    win.setTopBrowserView(twitterView); // keep twitterView on top after any resize
+    // Respect crawler state: don't yank crawlView out from under it during resize.
+    const top = crawler && crawler.state === 'crawling' ? crawlView : twitterView;
+    win.setTopBrowserView(top);
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   settings = new Settings();
   db.configure(settings.get('database'));
+  try {
+    const reset = await db.resetAllRunningOnBoot();
+    if (reset) console.log(`[Boot] Reset ${reset} stale 'running' crawl jobs to 'pending'`);
+  } catch (err) {
+    console.error('[Boot] resetAllRunningOnBoot failed:', err.message);
+  }
   createWindow();
 
   app.on('activate', () => {
@@ -1099,6 +1266,35 @@ app.whenReady().then(() => {
       createWindow();
     }
   });
+});
+
+// Flush current job back to pending before exit so crash-resume works.
+async function flushCurrentJobOnExit(reason) {
+  if (!crawler?.currentJob) return;
+  try {
+    await db.updateCrawlJob(crawler.currentJob.id, 'pending', { error_message: `interrupted:${reason}` });
+    console.log(`[Exit] Flushed job ${crawler.currentJob.id} back to pending (${reason})`);
+  } catch (err) {
+    console.error('[Exit] flush failed:', err.message);
+  }
+}
+
+app.on('before-quit', async (e) => {
+  if (crawler?.currentJob) {
+    e.preventDefault();
+    await flushCurrentJobOnExit('before-quit');
+    app.exit(0);
+  }
+});
+
+process.on('uncaughtException', async (err) => {
+  console.error('[uncaughtException]', err);
+  await flushCurrentJobOnExit('uncaughtException');
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (err) => {
+  console.error('[unhandledRejection]', err);
 });
 
 app.on('window-all-closed', () => {

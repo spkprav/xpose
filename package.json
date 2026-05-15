@@ -16,7 +16,10 @@
     "wiki:setup": "bash lib/wiki/setup-ollama.sh",
     "wiki:gen": "node lib/wiki/generate.js",
     "wiki:keywords": "node lib/wiki/extract-keywords.js",
-    "wiki:flush": "node lib/wiki/flush-keywords.js"
+    "wiki:flush": "node lib/wiki/flush-keywords.js",
+    "wiki:enrich-rt": "node lib/wiki/enrich-from-rt.js",
+    "wiki:bucket": "node lib/wiki/classify-niche.js",
+    "wiki:lists": "node lib/wiki/lists.js"
   },
   "keywords": [
     "electron",

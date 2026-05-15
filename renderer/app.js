@@ -799,6 +799,158 @@ ipcRenderer.on('icp-generated', (event, { icp, error }) => {
 });
 
 // ═══════════════════════════════════════════════════
+// Crawl tab — Deep crawl wiring
+// ═══════════════════════════════════════════════════
+function getDeepConfig() {
+  return {
+    target_tweets: parseInt($('#deep-target-tweets')?.value || '200', 10),
+    date_cutoff:   $('#deep-date-cutoff')?.value || '2026-03-01',
+    min_skip_scrolls:    parseInt($('#deep-min-skip')?.value || '4', 10),
+    zero_delta_break:    parseInt($('#deep-zero-break')?.value || '4', 10),
+    max_scrolls_ceiling: parseInt($('#deep-max-scrolls')?.value || '60', 10),
+  };
+}
+
+function getDeepFilters() {
+  return {
+    dateCutoff: $('#deep-date-cutoff')?.value || '2026-03-01',
+    recentDays: parseInt($('#deep-recent-days')?.value || '7', 10),
+  };
+}
+
+function appendDeepLog(line) {
+  const el = $('#deep-log');
+  if (!el) return;
+  if (el.textContent.startsWith('(no events')) el.textContent = '';
+  const ts = new Date().toTimeString().slice(0, 8);
+  el.textContent += `[${ts}] ${line}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function setDeepStatus(text) {
+  const el = $('#deep-status');
+  if (el) el.textContent = text;
+}
+
+$('#btn-preview-deep-targets')?.addEventListener('click', () => {
+  $('#deep-preview').textContent = 'Loading...';
+  ipcRenderer.send('get-deep-priority-preview', getDeepFilters());
+});
+
+ipcRenderer.on('deep-priority-preview', (_e, { success, count, sample, error }) => {
+  const el = $('#deep-preview');
+  if (!el) return;
+  if (!success) { el.textContent = `Error: ${error}`; el.style.color = '#f87171'; return; }
+  const lines = [`${count} target users (preview top 5):`];
+  for (const s of (sample || []).slice(0, 5)) {
+    lines.push(`  @${s.screen_name} (${s.relationship}, ${s.replies_recent} replies)`);
+  }
+  el.textContent = lines.join('\n');
+  el.style.color = '#e7e9ea';
+});
+
+$('#btn-enqueue-deep')?.addEventListener('click', () => {
+  ipcRenderer.send('set-deep-config', getDeepConfig());
+  ipcRenderer.send('enqueue-deep-priority', getDeepFilters());
+  setDeepStatus('Enqueuing...');
+});
+
+ipcRenderer.on('deep-priority-enqueued', (_e, { success, queued, cleared, error }) => {
+  if (!success) { setDeepStatus(`Error: ${error}`); return; }
+  setDeepStatus(`Queued ${queued} jobs (cleared ${cleared} prior pending). Click Start crawl.`);
+  appendDeepLog(`enqueued ${queued} deep jobs`);
+});
+
+$('#btn-start-deep-crawl')?.addEventListener('click', () => {
+  ipcRenderer.send('set-deep-config', getDeepConfig());
+  ipcRenderer.send('start-crawl', { mode: 'user_tweets' });
+  setDeepStatus('Started');
+  appendDeepLog('crawl started');
+});
+
+$('#btn-pause-deep')?.addEventListener('click', () => {
+  ipcRenderer.send('pause-crawl');
+  appendDeepLog('paused');
+});
+$('#btn-resume-deep')?.addEventListener('click', () => {
+  ipcRenderer.send('resume-crawl');
+  appendDeepLog('resumed');
+});
+$('#btn-stop-deep')?.addEventListener('click', () => {
+  ipcRenderer.send('stop-crawl');
+  appendDeepLog('stopped');
+});
+
+ipcRenderer.on('crawl-status', (_e, status) => {
+  if (!status) return;
+  if (status.currentProfile) {
+    setDeepStatus(`${status.state}: @${status.currentProfile} (queue ${status.queueLength}, saved ${status.totalSaved || 0})`);
+  } else if (status.state) {
+    setDeepStatus(`${status.state}${status.message ? ' — ' + status.message : ''}`);
+  }
+});
+
+// ═══════════════════════════════════════════════════
+// Crawl groups accordion
+// ═══════════════════════════════════════════════════
+function appendCrawlGroupsLog(line) {
+  const el = $('#crawl-groups-log');
+  if (!el) return;
+  const stamp = new Date().toLocaleTimeString();
+  el.textContent = `[${stamp}] ${line}\n` + el.textContent;
+}
+
+function refreshCrawlGroupCounts() {
+  ipcRenderer.send('get-crawl-groups');
+}
+
+ipcRenderer.on('crawl-groups-loaded', (_e, { success, counts, error }) => {
+  if (!success) {
+    appendCrawlGroupsLog(`load failed: ${error}`);
+    return;
+  }
+  const setCount = (id, v) => {
+    const el = $(id);
+    if (el) el.textContent = (v ?? 0).toLocaleString();
+  };
+  setCount('#cnt-following-zerozero', counts.following_zerozero);
+  setCount('#cnt-second-degree-zerozero', counts.second_degree_zerozero);
+  setCount('#cnt-reply-targets-no-tweets', counts.reply_targets_no_tweets);
+  const total = Number(counts.following_zerozero) + Number(counts.second_degree_zerozero) + Number(counts.reply_targets_no_tweets);
+  const summary = $('#crawl-groups-summary');
+  if (summary) summary.textContent = `${total.toLocaleString()} total across 3 groups`;
+});
+
+$('#btn-refresh-crawl-groups')?.addEventListener('click', refreshCrawlGroupCounts);
+
+$('#btn-queue-following-zerozero')?.addEventListener('click', () => {
+  appendCrawlGroupsLog('queueing following zero/zero (deep)...');
+  ipcRenderer.send('queue-following-zerozero');
+});
+$('#btn-queue-2nd-degree-shallow')?.addEventListener('click', () => {
+  appendCrawlGroupsLog('queueing 2nd-degree shallow...');
+  ipcRenderer.send('queue-2nd-degree-shallow');
+});
+$('#btn-queue-reply-targets')?.addEventListener('click', () => {
+  appendCrawlGroupsLog('queueing reply targets shallow...');
+  ipcRenderer.send('queue-reply-targets');
+});
+
+ipcRenderer.on('crawl-group-queued', (_e, { group, success, queued, skipped, error }) => {
+  if (!success) {
+    appendCrawlGroupsLog(`${group}: failed — ${error}`);
+    return;
+  }
+  appendCrawlGroupsLog(`${group}: queued ${queued}, skipped ${skipped} (already pending/running)`);
+  refreshCrawlGroupCounts();
+});
+
+// Auto-load counts when crawl tab becomes visible
+document.querySelectorAll('[data-tab="crawl"]').forEach(btn => {
+  btn.addEventListener('click', () => setTimeout(refreshCrawlGroupCounts, 50));
+});
+
+// ═══════════════════════════════════════════════════
 // Init
 // ═══════════════════════════════════════════════════
 renderProviders();
