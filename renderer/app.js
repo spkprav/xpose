@@ -14,6 +14,23 @@ const PROVIDERS = [
   { id: 'openai',      name: 'OpenAI',       desc: 'GPT models',    fields: ['apiKey', 'model'] },
 ];
 
+const LIST_SLUGS = ['anchors', 'venues', 'mutuals-rising', 'high-velocity-replies', 'growth-study'];
+const LIST_META = {
+  'anchors':               { label: 'Anchors',                desc: 'Big-name circle accounts. Public signal. Crawl weekly for trend awareness.' },
+  'venues':                { label: 'Venues',                 desc: 'Party-hosts where the circle gathers. Daily reply target.' },
+  'mutuals-rising':        { label: 'Mutuals Rising',         desc: 'Mutuals showing growth signals. Daily engage to lift each other.' },
+  'high-velocity-replies': { label: 'High Velocity Replies',  desc: 'Broad repliers. Daily study cadence + thread selection.' },
+  'growth-study':          { label: 'Growth Study',           desc: 'Discussion-drivers with viral hits. Weekly pattern study.' },
+};
+let activeListSlug = null;
+let listStatsCache = {};
+
+function collectListIds() {
+  const out = {};
+  LIST_SLUGS.forEach(slug => { out[slug] = ($(`#list-id-${slug}`)?.value || '').trim(); });
+  return out;
+}
+
 // ═══════════════════════════════════════════════════
 // DOM helpers
 // ═══════════════════════════════════════════════════
@@ -698,6 +715,12 @@ ipcRenderer.on('settings-loaded', (event, loaded) => {
   if ($('#db-user'))     $('#db-user').value     = db.user     || 'postgres';
   if ($('#db-password')) $('#db-password').value = db.password || 'postgres';
   if ($('#db-database')) $('#db-database').value = db.database || 'xpose';
+  const listIds = settings.lists || {};
+  LIST_SLUGS.forEach(slug => {
+    const el = $(`#list-id-${slug}`);
+    if (el) el.value = listIds[slug] || '';
+  });
+  renderListCards();
   renderProviders();
   if (settings.profile) {
     $('#profile-info')?.classList.remove('hidden');
@@ -719,6 +742,7 @@ $('#btn-save-settings').addEventListener('click', () => {
       password: $('#db-password')?.value || 'postgres',
       database: $('#db-database')?.value || 'xpose',
     },
+    lists: collectListIds(),
   };
   PROVIDERS.forEach(p => {
     newSettings[p.id] = {};
@@ -747,6 +771,8 @@ ipcRenderer.on('settings-saved', (event, success) => {
       password: $('#db-password')?.value || 'postgres',
       database: $('#db-database')?.value || 'xpose',
     };
+    settings.lists = collectListIds();
+    renderListCards();
     providerInputs = {};
   }
 });
@@ -949,9 +975,102 @@ ipcRenderer.on('crawl-group-queued', (_e, { group, success, queued, skipped, err
 document.querySelectorAll('[data-tab="crawl"]').forEach(btn => {
   btn.addEventListener('click', () => setTimeout(refreshCrawlGroupCounts, 50));
 });
+// LISTS PANEL
+// ═══════════════════════════════════════════════════
+
+function timeAgo(iso) {
+  if (!iso) return 'never';
+  const ms = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(ms / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
+}
+
+function renderListCards() {
+  const container = $('#lists-cards');
+  if (!container) return;
+  const ids = settings.lists || {};
+  container.innerHTML = LIST_SLUGS.map(slug => {
+    const meta = LIST_META[slug];
+    const listId = ids[slug] || '';
+    const stats = listStatsCache[slug] || {};
+    const configured = !!listId;
+    const isActive = activeListSlug === slug;
+    return `
+      <div class="list-card${isActive ? ' list-card-active' : ''}" data-slug="${slug}">
+        <div class="list-card-head">
+          <div class="list-card-title">${meta.label}</div>
+          <div class="list-card-id">${configured ? `id ${escapeHtml(listId)}` : '<span style="color:#f87171">not configured</span>'}</div>
+        </div>
+        <div class="list-card-desc">${meta.desc}</div>
+        <div class="list-card-stats">
+          <span title="Tweets captured today">today <b>${stats.today || 0}</b></span>
+          <span title="Tweets captured last 7 days">7d <b>${stats.recent || 0}</b></span>
+          <span title="Total tweets ever captured from this list">total <b>${stats.total || 0}</b></span>
+          <span title="Last capture timestamp">last ${timeAgo(stats.last_capture)}</span>
+        </div>
+        <div class="list-card-actions">
+          ${isActive
+            ? `<button class="sb-action-link list-stop-btn" data-slug="${slug}">Stop</button>`
+            : `<button class="sb-btn-primary list-open-btn" data-slug="${slug}" ${configured ? '' : 'disabled'}>Open &amp; crawl</button>`}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  container.querySelectorAll('.list-open-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const slug = btn.dataset.slug;
+      const listId = (settings.lists || {})[slug];
+      if (!listId) { showGlobalStatus('Set the list ID in Settings first'); return; }
+      ipcRenderer.send('open-list', { slug, listId });
+    });
+  });
+  container.querySelectorAll('.list-stop-btn').forEach(btn => {
+    btn.addEventListener('click', () => ipcRenderer.send('stop-list-crawl'));
+  });
+}
+
+function refreshListStats() {
+  ipcRenderer.send('get-list-stats', LIST_SLUGS);
+}
+
+ipcRenderer.on('list-stats', (event, stats) => {
+  listStatsCache = stats || {};
+  renderListCards();
+});
+
+ipcRenderer.on('list-crawl-status', (event, payload) => {
+  const { slug, status, message } = payload || {};
+  const strip = $('#list-crawl-strip');
+  const text  = $('#list-crawl-text');
+  if (status === 'started' || status === 'scrolling') {
+    activeListSlug = slug;
+    strip?.classList.remove('hidden');
+    if (text) text.textContent = message || `Crawling ${slug}...`;
+  } else if (status === 'stopped' || status === 'done' || status === 'error') {
+    activeListSlug = null;
+    strip?.classList.add('hidden');
+    refreshListStats();
+  } else if (status === 'progress') {
+    if (text) text.textContent = message || `Crawling ${slug}...`;
+  }
+  renderListCards();
+});
+
+$('#btn-refresh-lists')?.addEventListener('click', refreshListStats);
+$('#btn-stop-list-crawl')?.addEventListener('click', () => ipcRenderer.send('stop-list-crawl'));
+
+// Refresh stats when Lists tab is opened
+document.querySelector('[data-tab="lists"]')?.addEventListener('click', refreshListStats);
 
 // ═══════════════════════════════════════════════════
 // Init
 // ═══════════════════════════════════════════════════
 renderProviders();
 initIcons();
+refreshListStats();

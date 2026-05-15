@@ -30,6 +30,14 @@ let crawler = null;
 let fetchingList = false;
 let listCaptured = [];
 
+// X-list crawl state (Lists tab)
+let activeListSlug = null;
+let listScrollTimer = null;
+let listScrollCount = 0;
+let listCapturedThisRun = 0;
+const LIST_MAX_SCROLLS = 25;
+const LIST_SCROLL_INTERVAL_MS = 3500;
+
 const PAGE_PATHS = {
   '/HomeTimeline': 'for-you',
   '/HomeLatestTimeline': 'following',
@@ -654,6 +662,23 @@ function createWindow() {
         const response = await twitterView.webContents.debugger.sendCommand('Network.getResponseBody', { requestId: params.requestId });
         const jsonResponse = JSON.parse(response.body);
 
+        // Lists tab: tag tweets from active X-list with source provenance.
+        // Runs alongside the standard pagePath flow without interfering with it.
+        if (requestInfo.pagePath === 'list' && activeListSlug && crawler) {
+          try {
+            const data = jsonResponse.data || jsonResponse;
+            const result = await crawler.ingestListResponse(data, activeListSlug);
+            listCapturedThisRun += result.saved || 0;
+            win?.webContents.send('list-crawl-status', {
+              slug: activeListSlug,
+              status: 'progress',
+              message: `${activeListSlug}: ${listCapturedThisRun} new (scroll ${listScrollCount})`,
+            });
+          } catch (err) {
+            console.error('[ListCrawl] ingest error:', err.message);
+          }
+        }
+
         const tweetProcessor = new TweetProcessor(jsonResponse, requestInfo.pagePath);
         const tweets = tweetProcessor.extractTweets();
 
@@ -961,6 +986,87 @@ function createWindow() {
   ipcMain.on('pause-crawl', () => crawler.pause());
   ipcMain.on('resume-crawl', () => crawler.resume());
   ipcMain.on('stop-crawl', () => crawler.stop());
+
+  // ==================
+  // X-list crawl (Lists tab)
+  // ==================
+  function stopListCrawl(reason = 'stopped') {
+    if (listScrollTimer) { clearTimeout(listScrollTimer); listScrollTimer = null; }
+    const slug = activeListSlug;
+    activeListSlug = null;
+    listScrollCount = 0;
+    if (slug) {
+      console.log(`[ListCrawl] ${slug}: ${reason}. captured ${listCapturedThisRun} new tweets across ${listScrollCount} scrolls`);
+      win?.webContents.send('list-crawl-status', {
+        slug,
+        status: reason === 'done' ? 'done' : 'stopped',
+        message: `${slug}: ${reason} (${listCapturedThisRun} new)`,
+      });
+    }
+    listCapturedThisRun = 0;
+  }
+
+  async function scrollListOnce() {
+    if (!activeListSlug) return;
+    listScrollCount++;
+    try {
+      await twitterView.webContents.debugger.sendCommand('Input.synthesizeScrollGesture', {
+        x: 400, y: 400, xDistance: 0, yDistance: -3000, speed: 800,
+      });
+    } catch (_) {
+      try {
+        await twitterView.webContents.executeJavaScript('window.scrollTo(0, document.body.scrollHeight)');
+      } catch (_2) {}
+    }
+    if (listScrollCount >= LIST_MAX_SCROLLS) {
+      stopListCrawl('done');
+      return;
+    }
+    listScrollTimer = setTimeout(scrollListOnce, LIST_SCROLL_INTERVAL_MS);
+  }
+
+  ipcMain.on('open-list', async (event, { slug, listId }) => {
+    if (!slug || !listId) {
+      event.sender.send('list-crawl-status', { slug, status: 'error', message: 'Missing slug or list id' });
+      return;
+    }
+    if (activeListSlug) stopListCrawl('stopped');
+    activeListSlug = slug;
+    listScrollCount = 0;
+    listCapturedThisRun = 0;
+    const url = `https://x.com/i/lists/${listId}`;
+    console.log(`[ListCrawl] starting ${slug} -> ${url}`);
+    event.sender.send('list-crawl-status', { slug, status: 'started', message: `Loading ${slug}...` });
+    try {
+      await twitterView.webContents.loadURL(url);
+    } catch (err) {
+      console.error('[ListCrawl] navigate failed:', err.message);
+      event.sender.send('list-crawl-status', { slug, status: 'error', message: err.message });
+      stopListCrawl('error');
+      return;
+    }
+    // First scroll after initial load + render
+    listScrollTimer = setTimeout(scrollListOnce, LIST_SCROLL_INTERVAL_MS * 2);
+  });
+
+  ipcMain.on('stop-list-crawl', () => {
+    stopListCrawl('stopped');
+  });
+
+  ipcMain.on('get-list-stats', async (event, slugs) => {
+    const out = {};
+    const list = Array.isArray(slugs) && slugs.length
+      ? slugs
+      : ['anchors', 'venues', 'mutuals-rising', 'high-velocity-replies', 'growth-study'];
+    for (const slug of list) {
+      try {
+        out[slug] = await db.getListCrawlStats(slug, 7);
+      } catch (err) {
+        out[slug] = { total: 0, today: 0, recent: 0, last_capture: null };
+      }
+    }
+    event.sender.send('list-stats', out);
+  });
 
   ipcMain.on('queue-circle-crawl', async (event, { relationship, relationships } = {}) => {
     try {

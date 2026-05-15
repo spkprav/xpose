@@ -49,6 +49,7 @@
     <nav class="sb-tabs">
       <button data-tab="circle"   class="tab-btn active">Circle</button>
       <button data-tab="crawl"    class="tab-btn">Crawl</button>
+      <button data-tab="lists"    class="tab-btn">Lists</button>
       <button data-tab="drafts"   class="tab-btn">Drafts</button>
       <button data-tab="settings" class="tab-btn">Settings</button>
     </nav>
@@ -166,6 +167,7 @@
     </div>
 
     <!-- ═══════════════════════════════════════════════════════
+
          CRAWL PANEL
     ════════════════════════════════════════════════════════ -->
     <div id="panel-crawl" class="panel flex-1 flex flex-col overflow-hidden hidden">
@@ -284,6 +286,30 @@
     </div>
 
     <!-- ═══════════════════════════════════════════════════════
+         LISTS PANEL
+    ════════════════════════════════════════════════════════ -->
+    <div id="panel-lists" class="panel flex-1 flex flex-col overflow-hidden hidden">
+
+      <!-- Toolbar -->
+      <div class="sb-toolbar">
+        <span id="lists-summary" class="text-xs text-x-text-secondary flex-1">Click a card to open + crawl that list.</span>
+        <button id="btn-refresh-lists" class="sb-icon-btn" title="Refresh counters">
+          <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+        </button>
+      </div>
+
+      <!-- Active crawl strip (visible during a list crawl) -->
+      <div id="list-crawl-strip" class="sb-crawl-strip hidden">
+        <span class="crawl-pulse-dot"></span>
+        <span id="list-crawl-text" class="flex-1 text-xs text-x-text-secondary truncate">Idle</span>
+        <button id="btn-stop-list-crawl" class="sb-action-link ml-2">Stop</button>
+      </div>
+
+      <!-- Cards -->
+      <div id="lists-cards" class="flex-1 overflow-y-auto p-3 space-y-2"></div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════
          DRAFTS PANEL
     ════════════════════════════════════════════════════════ -->
     <div id="panel-drafts" class="panel flex-1 flex flex-col overflow-hidden hidden">
@@ -342,6 +368,33 @@
           <textarea id="feed-links" rows="6"
             placeholder="https://x.com/i/lists/..."
             class="sb-textarea font-mono text-xs"></textarea>
+        </section>
+
+        <section>
+          <h2 class="settings-heading">X-list IDs</h2>
+          <p class="text-xs text-x-text-secondary mb-2">Numeric ID from <code>x.com/i/lists/&lt;ID&gt;</code>. Drives the Lists tab.</p>
+          <div class="space-y-1.5">
+            <div class="flex items-center gap-2">
+              <label class="text-xs text-x-text-secondary w-32 shrink-0">anchors</label>
+              <input id="list-id-anchors" placeholder="1234567890" class="sb-textarea font-mono text-xs flex-1" />
+            </div>
+            <div class="flex items-center gap-2">
+              <label class="text-xs text-x-text-secondary w-32 shrink-0">venues</label>
+              <input id="list-id-venues" placeholder="1234567890" class="sb-textarea font-mono text-xs flex-1" />
+            </div>
+            <div class="flex items-center gap-2">
+              <label class="text-xs text-x-text-secondary w-32 shrink-0">mutuals-rising</label>
+              <input id="list-id-mutuals-rising" placeholder="1234567890" class="sb-textarea font-mono text-xs flex-1" />
+            </div>
+            <div class="flex items-center gap-2">
+              <label class="text-xs text-x-text-secondary w-32 shrink-0">high-velocity-replies</label>
+              <input id="list-id-high-velocity-replies" placeholder="1234567890" class="sb-textarea font-mono text-xs flex-1" />
+            </div>
+            <div class="flex items-center gap-2">
+              <label class="text-xs text-x-text-secondary w-32 shrink-0">growth-study</label>
+              <input id="list-id-growth-study" placeholder="1234567890" class="sb-textarea font-mono text-xs flex-1" />
+            </div>
+          </div>
         </section>
 
         <section>
