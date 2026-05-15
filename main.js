@@ -1503,6 +1503,19 @@ function resizeTwitterView() {
   }
 }
 
+// Prevent duplicate instances corrupting shared userData (service worker / quota DBs).
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
+  });
+}
+
 app.whenReady().then(async () => {
   settings = new Settings();
   db.configure(settings.get('database'));
