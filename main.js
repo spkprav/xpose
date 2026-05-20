@@ -1485,22 +1485,45 @@ function createWindow() {
     }
   });
 
-  win.on('resize', resizeTwitterView);
+  // Recompute BrowserView bounds on every state change that affects the content
+  // area. macOS fires `resize` differently for maximize/fullscreen transitions
+  // than for drag-resize, so subscribe to all of them. `setImmediate` defers the
+  // call until after Chromium has settled into the new size — without it the
+  // BrowserView is sometimes sized against the OLD content area.
+  const scheduleResize = () => setImmediate(resizeTwitterView);
+  win.on('resize',            scheduleResize);
+  win.on('maximize',          scheduleResize);
+  win.on('unmaximize',        scheduleResize);
+  win.on('enter-full-screen', scheduleResize);
+  win.on('leave-full-screen', scheduleResize);
 }
 
 function resizeTwitterView() {
-  const bounds = win.getBounds();
+  if (!win || win.isDestroyed()) return;
+  // getContentBounds() = inner area (no title bar / chrome). BrowserView.setBounds
+  // is in content coords, so this is the correct source. Using getBounds() leaves
+  // a ~28px black gap on macOS because the BrowserView gets sized to the OUTER
+  // window dimensions but rendered relative to the content origin.
+  const bounds = win.getContentBounds();
   const mobileWidth = 375;
   const normalSidebarWidth = 320;
 
-  const twitterWidth = focusMode ? mobileWidth : bounds.width - normalSidebarWidth;
-  twitterView.setBounds({ x: 0, y: 0, width: twitterWidth, height: bounds.height });
-  // crawlView gets same space so it has a real rendered viewport under twitterView
-  if (crawlView) {
-    crawlView.setBounds({ x: 0, y: 0, width: twitterWidth, height: bounds.height });
+  const twitterWidth = focusMode ? mobileWidth : Math.max(0, bounds.width - normalSidebarWidth);
+  const target = { x: 0, y: 0, width: twitterWidth, height: bounds.height };
+
+  if (twitterView && !twitterView.webContents.isDestroyed()) {
+    twitterView.setBounds(target);
+    // Force a paint in the newly exposed area. After a grow, Chromium can leave
+    // the freshly visible band black until the next input event — invalidate()
+    // schedules an immediate repaint so the user doesn't see a black stripe.
+    try { twitterView.webContents.invalidate(); } catch {}
+  }
+  if (crawlView && !crawlView.webContents.isDestroyed()) {
+    crawlView.setBounds(target);
+    try { crawlView.webContents.invalidate(); } catch {}
     // Respect crawler state: don't yank crawlView out from under it during resize.
     const top = crawler && crawler.state === 'crawling' ? crawlView : twitterView;
-    win.setTopBrowserView(top);
+    if (top) win.setTopBrowserView(top);
   }
 }
 
