@@ -721,8 +721,30 @@ ipcRenderer.on('settings-loaded', (event, loaded) => {
     const el = $(`#list-id-${slug}`);
     if (el) el.value = listIds[slug] || '';
   });
+  // Auto-crawl scheduler fields
+  const ac = settings.listAutoCrawl || {};
+  if ($('#auto-crawl-enabled'))    $('#auto-crawl-enabled').checked  = !!ac.enabled;
+  if ($('#auto-crawl-running'))    $('#auto-crawl-running').checked  = !!ac.running;
+  if ($('#auto-crawl-interval'))   $('#auto-crawl-interval').value   = ac.intervalMinutes || 60;
+  if ($('#auto-crawl-start-time')) $('#auto-crawl-start-time').value = ac.startTime || '';
+  // Scoring provider
+  const sp = settings.scoringProvider || 'ollama';
+  const spOllama = $('#scoring-provider-ollama');
+  const spOpen   = $('#scoring-provider-openrouter');
+  if (spOllama) spOllama.checked = sp === 'ollama';
+  if (spOpen)   spOpen.checked   = sp === 'openrouter';
+  if ($('#scoring-openrouter-model')) $('#scoring-openrouter-model').value = settings.scoringOpenrouterModel || 'google/gemini-2.5-flash';
+  // Telegram
+  const tg = settings.telegram || {};
+  if ($('#telegram-enabled'))       $('#telegram-enabled').checked       = !!tg.enabled;
+  if ($('#telegram-bot-token'))     $('#telegram-bot-token').value       = tg.botToken || '';
+  if ($('#telegram-chat-id'))       $('#telegram-chat-id').value         = tg.chatId   || '';
+  if ($('#telegram-min-score'))     $('#telegram-min-score').value       = tg.minScore != null ? tg.minScore : 60;
+  if ($('#telegram-max-per-crawl')) $('#telegram-max-per-crawl').value   = tg.maxPerCrawl != null ? tg.maxPerCrawl : 10;
+  if ($('#telegram-hours-window'))  $('#telegram-hours-window').value    = tg.hoursWindow != null ? tg.hoursWindow : 3;
   renderListCards();
   renderProviders();
+  renderAutoCrawlButton();
   if (settings.profile) {
     $('#profile-info')?.classList.remove('hidden');
     if ($('#profile-name'))   $('#profile-name').textContent   = settings.profile.name || '';
@@ -730,10 +752,40 @@ ipcRenderer.on('settings-loaded', (event, loaded) => {
   }
 });
 
+function collectScoringProvider() {
+  const el = document.querySelector('input[name="scoring-provider"]:checked');
+  return (el && el.value) || 'ollama';
+}
+
+function collectAutoCrawl() {
+  const raw = ($('#auto-crawl-start-time')?.value || '').trim();
+  // <input type=time> returns "HH:MM" or empty.
+  const startTime = /^\d{1,2}:\d{2}$/.test(raw) ? raw : '';
+  return {
+    enabled: !!$('#auto-crawl-enabled')?.checked,
+    running: !!$('#auto-crawl-running')?.checked,
+    intervalMinutes: Math.max(5, Number($('#auto-crawl-interval')?.value) || 60),
+    startTime,
+  };
+}
+
+function collectTelegram() {
+  return {
+    enabled:     !!$('#telegram-enabled')?.checked,
+    botToken:    $('#telegram-bot-token')?.value || '',
+    chatId:      $('#telegram-chat-id')?.value   || '',
+    minScore:    Math.max(0, Math.min(100, Number($('#telegram-min-score')?.value) || 60)),
+    maxPerCrawl: Math.max(1, Number($('#telegram-max-per-crawl')?.value) || 10),
+    hoursWindow: Math.max(1, Number($('#telegram-hours-window')?.value) || 3),
+  };
+}
+
 $('#btn-save-settings').addEventListener('click', () => {
   collectCurrentInputs();
   const newSettings = {
     llmProvider: selectedProvider,
+    scoringProvider: collectScoringProvider(),
+    scoringOpenrouterModel: ($('#scoring-openrouter-model')?.value || '').trim() || 'google/gemini-2.5-flash',
     icpCriteria: $('#icp-criteria')?.value || '',
     feedLinks:   $('#feed-links')?.value   || '',
     database: {
@@ -744,6 +796,8 @@ $('#btn-save-settings').addEventListener('click', () => {
       database: $('#db-database')?.value || 'xpose',
     },
     lists: collectListIds(),
+    listAutoCrawl: collectAutoCrawl(),
+    telegram: collectTelegram(),
   };
   PROVIDERS.forEach(p => {
     newSettings[p.id] = {};
@@ -763,6 +817,8 @@ ipcRenderer.on('settings-saved', (event, success) => {
     collectCurrentInputs();
     PROVIDERS.forEach(p => { settings[p.id] = { ...providerInputs[p.id] }; });
     settings.llmProvider  = selectedProvider;
+    settings.scoringProvider = collectScoringProvider();
+    settings.scoringOpenrouterModel = ($('#scoring-openrouter-model')?.value || '').trim() || 'google/gemini-2.5-flash';
     settings.icpCriteria  = $('#icp-criteria')?.value || '';
     settings.feedLinks    = $('#feed-links')?.value   || '';
     settings.database = {
@@ -773,8 +829,128 @@ ipcRenderer.on('settings-saved', (event, success) => {
       database: $('#db-database')?.value || 'xpose',
     };
     settings.lists = collectListIds();
+    settings.listAutoCrawl = collectAutoCrawl();
+    settings.telegram = collectTelegram();
     renderListCards();
+    renderAutoCrawlButton();
     providerInputs = {};
+  }
+});
+
+// ─── Auto-crawl play/pause button + status ───────────────────────────────
+function renderAutoCrawlButton() {
+  const btn = $('#btn-auto-crawl-toggle');
+  const nextEl = $('#auto-crawl-next');
+  if (!btn) return;
+  const ac = settings.listAutoCrawl || {};
+  const enabled = !!ac.enabled;
+  const running = !!ac.running;
+  // Disabled: show greyed play, click = nudge user to settings.
+  // Enabled+running: pause icon. Enabled+paused: play icon.
+  const icon = (enabled && running) ? 'pause' : 'play';
+  btn.innerHTML = `<i data-lucide="${icon}" class="w-3.5 h-3.5"></i>`;
+  btn.title = !enabled
+    ? 'Auto-crawl is disabled. Enable in Settings.'
+    : running
+      ? `Auto-crawl running (${ac.intervalMinutes || 60}m). Click to pause.`
+      : `Auto-crawl paused. Click to resume.`;
+  btn.style.opacity = enabled ? '1' : '0.45';
+  if (nextEl) nextEl.textContent = '';
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function formatCountdown(ms) {
+  if (!ms || ms < 0) return '';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `next in ${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `next in ${m}m`;
+  const h = Math.floor(m / 60);
+  const rm = m - h * 60;
+  return rm ? `next in ${h}h ${rm}m` : `next in ${h}h`;
+}
+
+function formatClock(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+$('#btn-auto-crawl-toggle')?.addEventListener('click', () => {
+  const ac = settings.listAutoCrawl || {};
+  if (!ac.enabled) {
+    showGlobalStatus('Enable auto-crawl in Settings first');
+    return;
+  }
+  const nextRunning = !ac.running;
+  settings.listAutoCrawl = { ...ac, running: nextRunning };
+  ipcRenderer.send('set-list-auto-crawl', { running: nextRunning });
+  renderAutoCrawlButton();
+  showGlobalStatus(nextRunning ? 'Auto-crawl resumed' : 'Auto-crawl paused', 1500);
+});
+
+let autoCrawlStatusCache = null;
+ipcRenderer.on('list-auto-crawl-status', (event, status) => {
+  if (!status) return;
+  autoCrawlStatusCache = status;
+  settings.listAutoCrawl = {
+    ...(settings.listAutoCrawl || {}),
+    enabled: !!status.enabled,
+    running: !!status.running,
+    intervalMinutes: status.intervalMinutes || 60,
+    startTime: status.startTime || '',
+  };
+  renderAutoCrawlButton();
+  renderAutoCrawlCountdown();
+});
+
+function renderAutoCrawlCountdown() {
+  const nextEl = $('#auto-crawl-next');
+  if (!nextEl) return;
+  const s = autoCrawlStatusCache;
+  if (!s || !s.enabled || !s.running || !s.nextAt) { nextEl.textContent = ''; return; }
+  const remain = s.nextAt - Date.now();
+  const cd = formatCountdown(remain);
+  const at = formatClock(s.nextAt);
+  nextEl.textContent = remain > 0 ? `${cd} (${at})` : `firing… (${at})`;
+}
+
+// Tick locally every 10s so the countdown stays fresh without main.js round-trips.
+setInterval(renderAutoCrawlCountdown, 10 * 1000);
+// Resync from main once a minute so the cached nextAt corrects after a fire.
+setInterval(() => {
+  const ac = settings.listAutoCrawl || {};
+  if (ac.enabled && ac.running) ipcRenderer.send('get-list-auto-crawl-status');
+}, 60 * 1000);
+
+// ─── Telegram test ───────────────────────────────────────────────────────
+$('#btn-telegram-test')?.addEventListener('click', () => {
+  const btn = $('#btn-telegram-test');
+  const status = $('#telegram-test-status');
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  if (status) status.textContent = '';
+  // Save current form values so the test uses what's on screen, not stale settings.
+  const tg = collectTelegram();
+  ipcRenderer.send('save-settings', { ...settings, telegram: tg });
+  // Settings save is fire-and-forget; wait briefly then test.
+  setTimeout(() => ipcRenderer.send('telegram-test'), 200);
+});
+
+ipcRenderer.on('telegram-test-result', (event, res) => {
+  const btn = $('#btn-telegram-test');
+  const status = $('#telegram-test-status');
+  if (btn) { btn.disabled = false; btn.textContent = 'Send test message'; }
+  if (status) {
+    if (res?.success) {
+      status.textContent = `OK. Bot @${res.username}. Check your chat.`;
+      status.style.color = '#34d399';
+    } else {
+      status.textContent = `Failed: ${res?.error || 'unknown error'}`;
+      status.style.color = '#f87171';
+    }
+    setTimeout(() => { status.textContent = ''; status.style.color = ''; }, 6000);
   }
 });
 
@@ -1105,6 +1281,10 @@ let feedIncludeActioned = false;
 let feedHoursWindow = 3;        // 3h default; togglable to 12h
 let feedRows = [];
 let feedCounts = [];
+// Watermark: hide tweets scored before this epoch-ms. Set when a workflow starts
+// so the Reply tab only shows the freshest batch. Persisted in localStorage so
+// the filter survives reloads. 0 = no filter.
+let feedWatermark = Number(localStorage.getItem('feedWatermark') || 0);
 
 const FEED_CRITERIA_LABELS = {
   icp_fit:              'ICP fit',
@@ -1227,15 +1407,43 @@ function renderFeed() {
   });
 }
 
+function applyFeedWatermark(rows) {
+  if (!feedWatermark) return rows;
+  return rows.filter(r => {
+    if (!r.scored_at) return false;          // unscored → hide while filter is active
+    return new Date(r.scored_at).getTime() >= feedWatermark;
+  });
+}
+
+function renderFeedWatermarkChip() {
+  const btn = $('#btn-clear-feed-watermark');
+  if (!btn) return;
+  if (feedWatermark) {
+    btn.classList.remove('hidden');
+    const t = new Date(feedWatermark);
+    btn.title = `Hiding tweets scored before ${t.toLocaleTimeString()}. Click to show all.`;
+  } else {
+    btn.classList.add('hidden');
+  }
+}
+
 ipcRenderer.on('list-feed-loaded', (event, payload) => {
   if (!payload?.success) {
     const sum = $('#feed-summary');
     if (sum) { sum.textContent = `Error: ${payload?.error || 'unknown'}`; sum.style.color = '#f87171'; }
     return;
   }
-  feedRows = payload.rows || [];
+  feedRows = applyFeedWatermark(payload.rows || []);
   feedCounts = payload.counts || [];
   renderFeed();
+  renderFeedWatermarkChip();
+});
+
+$('#btn-clear-feed-watermark')?.addEventListener('click', () => {
+  feedWatermark = 0;
+  localStorage.removeItem('feedWatermark');
+  renderFeedWatermarkChip();
+  loadFeed();
 });
 
 ipcRenderer.on('circle-tweet-action-done', (event, payload) => {
@@ -1336,9 +1544,17 @@ ipcRenderer.on('feed-score-progress', (event, p) => {
     txt.textContent = `Score error: ${p.error}`;
     cnt.textContent = '';
     feedScoreStripHideTimer = setTimeout(() => strip.classList.add('hidden'), 6000);
+  } else if (p.phase === 'aborting') {
+    txt.textContent = 'Stopping after current tweet…';
   } else if (p.phase === 'skip') {
     // Already running — ignore
   }
+});
+
+$('#btn-stop-feed-scoring')?.addEventListener('click', () => {
+  ipcRenderer.send('stop-feed-scoring');
+  const btn = $('#btn-stop-feed-scoring');
+  if (btn) { btn.disabled = true; btn.textContent = 'Stopping…'; setTimeout(() => { btn.disabled = false; btn.textContent = 'Stop'; }, 3000); }
 });
 
 // Load when Reply tab is opened
@@ -1350,3 +1566,152 @@ document.querySelector('[data-tab="reply"]')?.addEventListener('click', loadFeed
 renderProviders();
 initIcons();
 refreshListStats();
+
+// ═══════════════════════════════════════════════════
+// WORKFLOWS TAB
+// ═══════════════════════════════════════════════════
+const WF_BADGE_COLORS = {
+  idle:       { bg: '#374151', fg: '#d1d5db' },
+  clearing:   { bg: '#475569', fg: '#fff'    },
+  crawling:   { bg: '#2563eb', fg: '#fff'    },
+  scoring:    { bg: '#7c3aed', fg: '#fff'    },
+  notifying:  { bg: '#0ea5e9', fg: '#fff'    },
+  done:       { bg: '#16a34a', fg: '#fff'    },
+  error:      { bg: '#dc2626', fg: '#fff'    },
+};
+
+function applyWorkflowState(state) {
+  if (!state || state.id !== 'list-sweep') return;
+  const badge   = $('#wf-list-sweep-badge');
+  const status  = $('#wf-list-sweep-status');
+  const result  = $('#wf-list-sweep-result');
+  const runBtn  = $('#wf-list-sweep-run');
+  if (badge) {
+    const colors = WF_BADGE_COLORS[state.phase] || WF_BADGE_COLORS.idle;
+    badge.textContent = state.phase || 'idle';
+    badge.style.background = colors.bg;
+    badge.style.color      = colors.fg;
+  }
+  if (status) {
+    status.textContent = state.message || (state.phase === 'idle' ? 'Not yet run.' : '');
+  }
+  if (result && state.lastResult) {
+    const r = state.lastResult;
+    const parts = [];
+    if (r.scored != null) parts.push(`scored ${r.scored}`);
+    if (r.failed)         parts.push(`${r.failed} failed`);
+    if (r.pushed != null) parts.push(`pushed ${r.pushed} to telegram`);
+    if (r.durationMs)     parts.push(`${Math.round(r.durationMs / 1000)}s`);
+    if (r.error)          parts.push(`error: ${r.error}`);
+    if (state.finishedAt) parts.push(`at ${new Date(state.finishedAt).toLocaleTimeString()}`);
+    if (parts.length) {
+      result.textContent = `Last run: ${parts.join(' · ')}`;
+      result.classList.remove('hidden');
+    }
+  }
+  const busy = ['clearing', 'crawling', 'scoring', 'notifying'].includes(state.phase);
+  if (runBtn) {
+    runBtn.disabled = busy;
+    runBtn.textContent = busy ? 'Running…' : 'Run Now';
+  }
+}
+
+let lastWorkflowStartedAt = 0;
+ipcRenderer.on('workflow-state', (event, state) => {
+  applyWorkflowState(state);
+  // When a fresh workflow starts, watermark the Reply tab so older tweets stay
+  // hidden until the user explicitly clicks "show older". Triggered on the
+  // 'clearing' phase, which fires BEFORE the crawl so the UI wipes before any
+  // network traffic begins.
+  if (state && state.phase === 'clearing' && state.startedAt && state.startedAt !== lastWorkflowStartedAt) {
+    lastWorkflowStartedAt = state.startedAt;
+    feedWatermark = state.startedAt;
+    try { localStorage.setItem('feedWatermark', String(feedWatermark)); } catch {}
+    // Wipe immediately.
+    feedRows = [];
+    renderFeed();
+    renderFeedWatermarkChip();
+    const sum = $('#feed-summary');
+    if (sum) sum.textContent = 'Cleared. Crawling starts next…';
+  }
+  // When scoring completes or workflow finishes, reload feed so the new rows show.
+  if (state && (state.phase === 'done' || state.phase === 'notifying')) {
+    if (document.querySelector('[data-tab="reply"]')?.classList.contains('active')) {
+      loadFeed();
+    }
+  }
+});
+ipcRenderer.on('workflow-run-result', (event, r) => {
+  if (!r) return;
+  if (!r.ok) showGlobalStatus(`Workflow failed: ${r.error}`);
+});
+
+function loadWorkflowScheduleFromSettings() {
+  const ac = settings.listAutoCrawl || {};
+  // "Enable scheduled run" mirrors `enabled` only — pause/resume is a separate toggle.
+  if ($('#wf-list-sweep-enabled'))  $('#wf-list-sweep-enabled').checked  = !!ac.enabled;
+  if ($('#wf-list-sweep-interval')) $('#wf-list-sweep-interval').value   = ac.intervalMinutes || 60;
+  if ($('#wf-list-sweep-start'))    $('#wf-list-sweep-start').value      = ac.startTime || '';
+  const tg = settings.telegram || {};
+  if ($('#wf-list-sweep-min-score')) $('#wf-list-sweep-min-score').value = tg.minScore != null ? tg.minScore : 60;
+  const pauseBtn = $('#wf-list-sweep-pause');
+  if (pauseBtn) {
+    pauseBtn.textContent = (ac.enabled && ac.running) ? 'Pause schedule' : 'Resume schedule';
+    pauseBtn.disabled = !ac.enabled;
+  }
+}
+
+function updateWorkflowNextLabel() {
+  const el = $('#wf-list-sweep-next');
+  if (!el) return;
+  const s = autoCrawlStatusCache;
+  if (!s || !s.enabled || !s.running || !s.nextAt) { el.textContent = ''; return; }
+  el.textContent = `${formatCountdown(s.nextAt - Date.now())} (${formatClock(s.nextAt)})`;
+}
+setInterval(updateWorkflowNextLabel, 10 * 1000);
+
+document.querySelector('[data-tab="workflows"]')?.addEventListener('click', () => {
+  loadWorkflowScheduleFromSettings();
+  updateWorkflowNextLabel();
+  ipcRenderer.send('get-workflow-state');
+  ipcRenderer.send('get-list-auto-crawl-status');
+});
+
+$('#wf-list-sweep-run')?.addEventListener('click', () => {
+  const btn = $('#wf-list-sweep-run');
+  if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
+  ipcRenderer.send('run-workflow', { id: 'list-sweep' });
+});
+
+$('#wf-list-sweep-pause')?.addEventListener('click', () => {
+  const ac = settings.listAutoCrawl || {};
+  if (!ac.enabled) {
+    showGlobalStatus('Enable scheduled run first');
+    return;
+  }
+  const nextRunning = !ac.running;
+  settings.listAutoCrawl = { ...ac, running: nextRunning };
+  ipcRenderer.send('set-list-auto-crawl', { running: nextRunning });
+  loadWorkflowScheduleFromSettings();
+});
+
+$('#wf-list-sweep-save')?.addEventListener('click', () => {
+  const enabled = !!$('#wf-list-sweep-enabled')?.checked;
+  const intervalMinutes = Math.max(5, Number($('#wf-list-sweep-interval')?.value) || 60);
+  const raw = ($('#wf-list-sweep-start')?.value || '').trim();
+  const startTime = /^\d{1,2}:\d{2}$/.test(raw) ? raw : '';
+  const ac = settings.listAutoCrawl || {};
+  const patch = { enabled, running: enabled ? (ac.running !== false) : false, intervalMinutes, startTime };
+  settings.listAutoCrawl = { ...ac, ...patch };
+  ipcRenderer.send('set-list-auto-crawl', patch);
+
+  // Persist telegram.minScore (the only telegram knob on this card).
+  const minScore = Math.max(0, Math.min(100, Number($('#wf-list-sweep-min-score')?.value) || 60));
+  const tg = { ...(settings.telegram || {}), minScore };
+  settings.telegram = tg;
+  // Send a full save so other settings stay intact.
+  ipcRenderer.send('save-settings', { ...settings, telegram: tg });
+
+  loadWorkflowScheduleFromSettings();
+  showGlobalStatus('Workflow saved', 1500);
+});

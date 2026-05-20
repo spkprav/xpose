@@ -17,6 +17,7 @@ const db = require('./lib/db');
 const { generateDrafts } = require('./lib/drafts');
 const wikiExport = require('./lib/wiki-export');
 const { scoreUnscoredFeed, setConfig: setScorerConfig } = require('./lib/feed/score-tweets');
+const telegram = require('./lib/telegram');
 
 let win, twitterView, crawlView, settings, llmClient;
 let pendingFetch = false;
@@ -34,6 +35,7 @@ let listCaptured = [];
 // Feed scoring state — debounced after crawl, plus a periodic heartbeat.
 let feedScoringRunning = false;
 let feedScoringDebounce = null;
+let feedScoringAbortRequested = false;
 const FEED_SCORE_DEBOUNCE_MS = 30 * 1000;       // wait 30s after last crawl event
 const FEED_SCORE_HEARTBEAT_MS = 5 * 60 * 1000;  // run every 5min while app open
 const FEED_SCORE_HOURS_MAX = 3;
@@ -42,12 +44,17 @@ const FEED_SCORE_BATCH_LIMIT = 60;
 function syncScorerConfig() {
   if (!settings) return;
   const ollama = settings.get('ollama') || {};
+  const openrouter = settings.get('openrouter') || {};
+  const provider = settings.get('scoringProvider') || 'ollama';
   setScorerConfig({
+    provider,
     baseUrl:     ollama.baseUrl  || 'http://localhost:11434',
     textModel:   ollama.scoreModel  || 'qwen2.5vl:7b',
     visionUrl:   ollama.visionUrl   || ollama.baseUrl || null,
     visionModel: ollama.visionModel || 'qwen2.5vl:7b',
     enableVision: ollama.enableVision !== false,
+    openrouterApiKey: openrouter.apiKey || '',
+    openrouterModel:  settings.get('scoringOpenrouterModel') || 'google/gemini-2.5-flash',
   });
 }
 
@@ -63,12 +70,14 @@ async function runFeedScoring({ hoursMax = FEED_SCORE_HOURS_MAX, limit = FEED_SC
   }
   syncScorerConfig();
   feedScoringRunning = true;
+  feedScoringAbortRequested = false;
   const t0 = Date.now();
   emitFeedProgress({ phase: 'start', source });
   try {
     const r = await scoreUnscoredFeed({
       hoursMax,
       limit,
+      shouldAbort:   () => feedScoringAbortRequested,
       onStart:       (n) => emitFeedProgress({ phase: 'queued', total: n, source }),
       onTweetStart:  (i, n, t) => emitFeedProgress({
         phase: 'tweet-start', i, n, source,
@@ -115,6 +124,15 @@ const LIST_BURST_SCROLLS = 2;       // jump-to-bottom twice, enough for 12-24h c
 const LIST_BURST_DELAY_MS = 1500;   // gap between bursts to let content load
 const LIST_STOP_GRACE_MS = 2000;  // ignore Stop within N ms of Open (debounce accidental double-click)
 
+// Auto-crawl scheduler state. `running` mirrors settings.listAutoCrawl.running so
+// pause survives a Settings save. The timer is rescheduled whenever settings change.
+let autoCrawlTimer = null;
+let autoCrawlNextAt = 0;
+let autoCrawlQueue = [];      // slugs queued for this auto run
+let autoCrawlPostHookSlug = null;  // slug to push to Telegram once its crawl finishes
+let autoCrawlLastFireAt = 0;       // ms-epoch of the last fired auto-cycle (set when it actually started)
+let autoCrawlPrevRunning = false;  // tracks running-state transitions to detect "just enabled"
+
 const PAGE_PATHS = {
   '/HomeTimeline': 'for-you',
   '/HomeLatestTimeline': 'following',
@@ -133,6 +151,330 @@ function getCrawlEndpointType(url) {
 function getPagePathFromUrl(url) {
   const endpoint = MONITORED_ENDPOINTS.find(ep => url.includes(ep));
   return endpoint ? PAGE_PATHS[endpoint] : null;
+}
+
+// ─── Auto-crawl scheduler ────────────────────────────────────────────────
+function emitAutoCrawlStatus() {
+  if (!win || win.isDestroyed()) return;
+  const cfg = (settings && settings.get('listAutoCrawl')) || {};
+  win.webContents.send('list-auto-crawl-status', {
+    enabled: !!cfg.enabled,
+    running: !!cfg.running,
+    intervalMinutes: cfg.intervalMinutes || 60,
+    startTime: cfg.startTime || '',
+    nextAt: autoCrawlNextAt || null,
+    lastFireAt: autoCrawlLastFireAt || null,
+  });
+}
+
+function clearAutoCrawlTimer() {
+  if (autoCrawlTimer) { clearTimeout(autoCrawlTimer); autoCrawlTimer = null; }
+  autoCrawlNextAt = 0;
+}
+
+// Pure: compute the next scheduled fire-time given config + history.
+// - With startTime: cadence is anchored. nextSlot = anchor + N*interval, where
+//   anchor is the most recent occurrence of HH:MM and N is chosen so the slot
+//   sits strictly after max(now, lastFireAt).
+// - Without startTime:
+//     justEnabled → fire ASAP (1s grace, so the scheduler can settle).
+//     otherwise   → lastFireAt + interval, or now if no prior fire.
+function computeNextAutoCrawlAt({ intervalMinutes, startTime, lastFireAt = 0, justEnabled = false, now = Date.now() }) {
+  const intervalMs = Math.max(5, Number(intervalMinutes) || 60) * 60_000;
+  if (startTime && /^\d{1,2}:\d{2}$/.test(startTime)) {
+    const [h, m] = startTime.split(':').map(Number);
+    const ref = new Date(); ref.setHours(h, m, 0, 0);
+    let anchor = ref.getTime();
+    if (anchor > now) anchor -= 86_400_000; // use yesterday's anchor if today's hasn't happened yet
+    const after = Math.max(now, lastFireAt || 0);
+    const slots = Math.floor((after - anchor) / intervalMs) + 1;
+    return anchor + slots * intervalMs;
+  }
+  if (justEnabled) return now + 1000;
+  return (lastFireAt || now) + intervalMs;
+}
+
+function scheduleNextAutoCrawl(reason = 'reschedule') {
+  clearAutoCrawlTimer();
+  const cfg = (settings && settings.get('listAutoCrawl')) || {};
+  const nowRunning = !!(cfg.enabled && cfg.running);
+  const justEnabled = nowRunning && !autoCrawlPrevRunning;
+  autoCrawlPrevRunning = nowRunning;
+  if (!nowRunning) {
+    autoCrawlNextAt = 0;
+    emitAutoCrawlStatus();
+    return;
+  }
+  const nextAt = computeNextAutoCrawlAt({
+    intervalMinutes: cfg.intervalMinutes,
+    startTime: cfg.startTime,
+    lastFireAt: autoCrawlLastFireAt,
+    justEnabled,
+  });
+  const delay = Math.max(1000, nextAt - Date.now());
+  autoCrawlNextAt = nextAt;
+  autoCrawlTimer = setTimeout(() => runAutoCrawl().catch(e => console.error('[AutoCrawl] error:', e.message)), delay);
+  const mins = Math.round(delay / 60000);
+  console.log(`[AutoCrawl] next run in ${mins < 1 ? `${Math.round(delay/1000)}s` : `${mins}m`} (${reason}, justEnabled=${justEnabled}, startTime=${cfg.startTime || 'none'})`);
+  emitAutoCrawlStatus();
+}
+
+async function runAutoCrawl() {
+  const cfg = (settings && settings.get('listAutoCrawl')) || {};
+  if (!cfg.enabled || !cfg.running) return;
+  if (activeListSlug) {
+    console.log('[AutoCrawl] skip — a list crawl is already active');
+    // Stamp lastFireAt so the next computed slot is one full interval out,
+    // preventing a tight reschedule loop while a manual crawl is running.
+    autoCrawlLastFireAt = Date.now();
+    scheduleNextAutoCrawl('busy');
+    return;
+  }
+  // Delegate to the workflow so the Workflows tab sees the same phases.
+  const r = await runListSweepWorkflow({ source: 'auto' });
+  if (!r.ok) {
+    console.log(`[AutoCrawl] workflow refused: ${r.error}`);
+    autoCrawlLastFireAt = Date.now();
+    scheduleNextAutoCrawl('refused');
+  }
+}
+
+// ─── List crawl primitives (module scope so scheduler + IPC share them) ──
+function stopListCrawl(reason = 'stopped') {
+  if (listScrollTimer) { clearTimeout(listScrollTimer); listScrollTimer = null; }
+  const slug = activeListSlug;
+  const finalScrolls = listScrollCount;
+  const finalCaptured = listCapturedThisRun;
+  activeListSlug = null;
+  listScrollCount = 0;
+  listCapturedThisRun = 0;
+  if (slug) {
+    console.log(`[ListCrawl] ${slug}: ${reason}. captured ${finalCaptured} new tweets across ${finalScrolls} scrolls`);
+    win?.webContents.send('list-crawl-status', {
+      slug,
+      status: reason === 'done' ? 'done' : (reason === 'error' ? 'error' : 'stopped'),
+      message: `${slug}: ${reason} (${finalCaptured} new, ${finalScrolls} scrolls)`,
+    });
+    // Fire post-crawl hooks (telegram push, auto-queue drain) after a brief delay
+    // so the UI sees the "done" state first.
+    setTimeout(() => {
+      onListCrawlComplete(slug, reason).catch(err => console.error('[ListCrawl] post hook:', err.message));
+    }, 250);
+  }
+}
+
+async function scrollListOnce() {
+  if (!activeListSlug) return;
+  listScrollCount++;
+  try {
+    await twitterView.webContents.executeJavaScript('window.scrollTo(0, document.body.scrollHeight)');
+  } catch (_) {
+    try {
+      await twitterView.webContents.debugger.sendCommand('Input.synthesizeScrollGesture', {
+        x: 400, y: 400, xDistance: 0, yDistance: -9999, speed: 1200,
+      });
+    } catch (_2) {}
+  }
+  console.log(`[ListCrawl] ${activeListSlug}: burst ${listScrollCount}/${LIST_BURST_SCROLLS} (captured ${listCapturedThisRun} so far)`);
+  if (listScrollCount >= LIST_BURST_SCROLLS) {
+    stopListCrawl('done');
+    return;
+  }
+  listScrollTimer = setTimeout(scrollListOnce, LIST_BURST_DELAY_MS);
+}
+
+function openListFromMain(slug, listId) {
+  if (!slug || !listId) return;
+  if (activeListSlug === slug) return;
+  if (activeListSlug) stopListCrawl('stopped');
+  activeListSlug = slug;
+  listScrollCount = 0;
+  listCapturedThisRun = 0;
+  listOpenedAt = Date.now();
+  const url = `https://x.com/i/lists/${listId}`;
+  console.log(`[ListCrawl] starting ${slug} -> ${url}`);
+  win?.webContents.send('list-crawl-status', { slug, status: 'started', message: `Loading ${slug}...` });
+  twitterView.webContents.loadURL(url)
+    .then(() => { listScrollTimer = setTimeout(scrollListOnce, 2000); })
+    .catch(err => {
+      console.error('[ListCrawl] navigate failed:', err.message);
+      win?.webContents.send('list-crawl-status', { slug, status: 'error', message: err.message });
+      stopListCrawl('error');
+    });
+}
+
+// Called from stopListCrawl after a list finishes. Drains queue, then runs the
+// post-crawl pipeline: score → telegram → reschedule.
+async function onListCrawlComplete(finishedSlug, reason) {
+  // Drain queue first (Fetch All / auto-crawl sequence). Iterate (not recurse)
+  // so a queue full of missing IDs can't blow the stack.
+  const ids = (settings && settings.get('lists')) || {};
+  while (autoCrawlQueue.length) {
+    const next = autoCrawlQueue.shift();
+    const listId = ids[next];
+    if (listId) {
+      setTimeout(() => openListFromMain(next, listId), 1500);
+      return;
+    }
+    console.log(`[ListCrawl] skipping ${next} — no list id configured`);
+  }
+
+  // Cycle complete. Run pipeline: score → notify.
+  await runPostCrawlPipeline(reason);
+
+  // Schedule next auto-crawl if applicable.
+  const cfg = (settings && settings.get('listAutoCrawl')) || {};
+  if (cfg.enabled && cfg.running) scheduleNextAutoCrawl('cycle-done');
+}
+
+// ─── Workflow pipeline (score → telegram) ────────────────────────────────
+// workflowState is the source of truth for the Workflows tab UI. Phases:
+//   idle | crawling | scoring | notifying | done | error
+const workflowState = {
+  id: 'list-sweep',
+  phase: 'idle',
+  startedAt: null,
+  finishedAt: null,
+  lastResult: null,    // { scored, failed, pushed, durationMs, error? }
+  message: '',
+};
+
+function emitWorkflowState(patch = {}) {
+  Object.assign(workflowState, patch);
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('workflow-state', { ...workflowState });
+  }
+}
+
+async function runPostCrawlPipeline(reason = 'cycle-done') {
+  const t0 = Date.now();
+  let scored = 0, failed = 0, pushed = 0, errorMsg = null;
+  try {
+    emitWorkflowState({ phase: 'scoring', message: `Scoring after crawl (${reason})` });
+    const sr = await runFeedScoring({ source: 'post-crawl' });
+    scored = sr.scored || 0;
+    failed = sr.failed || 0;
+
+    emitWorkflowState({ phase: 'notifying', message: `Pushing top tweets to Telegram` });
+    const pr = await maybePushTelegramRecent();
+    pushed = pr.sent || 0;
+
+    emitWorkflowState({
+      phase: 'done',
+      finishedAt: Date.now(),
+      lastResult: { scored, failed, pushed, durationMs: Date.now() - t0 },
+      message: `Done. Scored ${scored}, pushed ${pushed}.`,
+    });
+  } catch (err) {
+    errorMsg = err.message;
+    console.error('[Pipeline]', err);
+    emitWorkflowState({
+      phase: 'error',
+      finishedAt: Date.now(),
+      lastResult: { scored, failed, pushed, durationMs: Date.now() - t0, error: errorMsg },
+      message: `Error: ${errorMsg}`,
+    });
+  }
+}
+
+// Composite "List Sweep & Notify" workflow: crawl all configured lists → score → telegram.
+// Used by the Workflows tab "Run Now" button and by the auto-crawl scheduler.
+async function runListSweepWorkflow({ source = 'manual' } = {}) {
+  if (activeListSlug || ['clearing', 'crawling', 'scoring', 'notifying'].includes(workflowState.phase)) {
+    return { ok: false, error: 'workflow already running' };
+  }
+  const ids = (settings && settings.get('lists')) || {};
+  const configured = Object.keys(ids).filter(s => ids[s]);
+  if (!configured.length) {
+    emitWorkflowState({ phase: 'error', message: 'No list IDs configured', finishedAt: Date.now() });
+    return { ok: false, error: 'no list IDs configured' };
+  }
+
+  // Step 1: clear. Emit a distinct 'clearing' phase first so the renderer can
+  // wipe the Reply tab BEFORE any crawl traffic arrives. Short delay lets the
+  // renderer commit the empty state before we kick off network work.
+  const startedAt = Date.now();
+  emitWorkflowState({
+    phase: 'clearing',
+    startedAt,
+    finishedAt: null,
+    lastResult: null,
+    message: 'Clearing Reply tab before crawl',
+  });
+  await new Promise(r => setTimeout(r, 200));
+
+  // Step 2: crawl.
+  emitWorkflowState({
+    phase: 'crawling',
+    startedAt,
+    message: `Crawling ${configured.length} list(s): ${configured.join(', ')}`,
+  });
+  autoCrawlLastFireAt = Date.now();
+  autoCrawlQueue = configured.slice(1);
+  const first = configured[0];
+  openListFromMain(first, ids[first]);
+  // The crawl is async; pipeline continues from onListCrawlComplete:
+  //   crawling → scoring → notifying → done
+  return { ok: true, queued: configured };
+}
+
+// ─── Telegram push ───────────────────────────────────────────────────────
+// In-memory dedup: tweet ids already pushed in this session. Persists per-process,
+// resets on app restart. Capped at 2000 entries (FIFO trim) so a long session
+// doesn't leak. Good enough until a DB column is worth adding.
+const telegramPushedIds = new Set();
+const TELEGRAM_PUSHED_CAP = 2000;
+
+function markTelegramPushed(id) {
+  telegramPushedIds.add(String(id));
+  if (telegramPushedIds.size > TELEGRAM_PUSHED_CAP) {
+    const drop = telegramPushedIds.size - TELEGRAM_PUSHED_CAP;
+    const it = telegramPushedIds.values();
+    for (let i = 0; i < drop; i++) telegramPushedIds.delete(it.next().value);
+  }
+}
+
+async function maybePushTelegramRecent({ slug = 'all' } = {}) {
+  const tg = (settings && settings.get('telegram')) || {};
+  if (!tg.enabled || !tg.botToken || !tg.chatId) {
+    console.log('[Telegram] disabled or missing token/chat — skipping push');
+    return { sent: 0, skipped: 0 };
+  }
+  const minScore = Number(tg.minScore || 60);
+  const maxPerCrawl = Math.max(1, Number(tg.maxPerCrawl || 10));
+  const hoursWindow = Math.max(1, Number(tg.hoursWindow || 3));
+  let rows;
+  try {
+    rows = await db.getListFeedScored({ slug, hoursWindow, limit: 200, includeActioned: false });
+  } catch (err) {
+    console.error('[Telegram] db read failed:', err.message);
+    return { sent: 0, error: err.message };
+  }
+  const eligible = (rows || [])
+    .filter(r => r.score_total != null && r.score_total >= minScore)
+    .filter(r => !telegramPushedIds.has(String(r.id)))
+    .slice(0, maxPerCrawl);
+  if (!eligible.length) {
+    console.log(`[Telegram] no new rows ≥ ${minScore} (slug=${slug}, window=${hoursWindow}h)`);
+    return { sent: 0, skipped: 0 };
+  }
+  console.log(`[Telegram] pushing ${eligible.length} tweets (slug=${slug})`);
+  try {
+    const r = await telegram.pushTweets({
+      botToken: tg.botToken,
+      chatId: tg.chatId,
+      rows: eligible,
+      slug,
+    });
+    if (r.sent > 0) {
+      for (const row of eligible) markTelegramPushed(row.id);
+    }
+    console.log(`[Telegram] sent=${r.sent} failed=${r.failed}`);
+    return r;
+  } catch (err) {
+    console.error('[Telegram] push failed:', err.message);
+    return { sent: 0, error: err.message };
+  }
 }
 
 function getLLMClient() {
@@ -421,13 +763,55 @@ function createWindow() {
 
   ipcMain.on('save-settings', (event, newSettings) => {
     const prevDb = JSON.stringify(settings.get('database'));
+    const prevAuto = JSON.stringify(settings.get('listAutoCrawl'));
     const success = settings.update(newSettings);
     llmClient = null; // Reset client to pick up new settings
     // If DB config changed, reconfigure the pool
     if (JSON.stringify(settings.get('database')) !== prevDb) {
       db.configure(settings.get('database'));
     }
+    // Sync scorer in case provider/key/model changed.
+    syncScorerConfig();
+    // Reschedule auto-crawl if settings changed.
+    if (JSON.stringify(settings.get('listAutoCrawl')) !== prevAuto) {
+      scheduleNextAutoCrawl('settings-saved');
+    }
     win.webContents.send('settings-saved', success);
+  });
+
+  // Play/pause auto-crawl from the Lists toolbar without opening Settings.
+  ipcMain.on('set-list-auto-crawl', (event, patch = {}) => {
+    const cur = settings.get('listAutoCrawl') || {};
+    const next = { ...cur, ...patch };
+    settings.set('listAutoCrawl', next);
+    scheduleNextAutoCrawl('toggle');
+  });
+
+  ipcMain.on('get-list-auto-crawl-status', () => emitAutoCrawlStatus());
+
+  // ─── Workflows ─────────────────────────────────────────────
+  ipcMain.on('get-workflow-state', () => {
+    if (win && !win.isDestroyed()) win.webContents.send('workflow-state', { ...workflowState });
+  });
+
+  ipcMain.on('run-workflow', async (event, { id } = {}) => {
+    if (id !== 'list-sweep') {
+      event.sender.send('workflow-run-result', { ok: false, error: `unknown workflow: ${id}` });
+      return;
+    }
+    const r = await runListSweepWorkflow({ source: 'manual' });
+    event.sender.send('workflow-run-result', { id, ...r });
+  });
+
+  // Telegram: test connection (verifies token + chat id).
+  ipcMain.on('telegram-test', async () => {
+    const tg = settings.get('telegram') || {};
+    try {
+      const me = await telegram.testConnection({ botToken: tg.botToken, chatId: tg.chatId });
+      win.webContents.send('telegram-test-result', { success: true, username: me.username });
+    } catch (err) {
+      win.webContents.send('telegram-test-result', { success: false, error: err.message });
+    }
   });
 
   // ==================
@@ -1082,43 +1466,8 @@ function createWindow() {
   // ==================
   // X-list crawl (Lists tab)
   // ==================
-  function stopListCrawl(reason = 'stopped') {
-    if (listScrollTimer) { clearTimeout(listScrollTimer); listScrollTimer = null; }
-    const slug = activeListSlug;
-    const finalScrolls = listScrollCount;
-    const finalCaptured = listCapturedThisRun;
-    activeListSlug = null;
-    listScrollCount = 0;
-    listCapturedThisRun = 0;
-    if (slug) {
-      console.log(`[ListCrawl] ${slug}: ${reason}. captured ${finalCaptured} new tweets across ${finalScrolls} scrolls`);
-      win?.webContents.send('list-crawl-status', {
-        slug,
-        status: reason === 'done' ? 'done' : (reason === 'error' ? 'error' : 'stopped'),
-        message: `${slug}: ${reason} (${finalCaptured} new, ${finalScrolls} scrolls)`,
-      });
-    }
-  }
-
-  async function scrollListOnce() {
-    if (!activeListSlug) return;
-    listScrollCount++;
-    try {
-      await twitterView.webContents.executeJavaScript('window.scrollTo(0, document.body.scrollHeight)');
-    } catch (_) {
-      try {
-        await twitterView.webContents.debugger.sendCommand('Input.synthesizeScrollGesture', {
-          x: 400, y: 400, xDistance: 0, yDistance: -9999, speed: 1200,
-        });
-      } catch (_2) {}
-    }
-    console.log(`[ListCrawl] ${activeListSlug}: burst ${listScrollCount}/${LIST_BURST_SCROLLS} (captured ${listCapturedThisRun} so far)`);
-    if (listScrollCount >= LIST_BURST_SCROLLS) {
-      stopListCrawl('done');
-      return;
-    }
-    listScrollTimer = setTimeout(scrollListOnce, LIST_BURST_DELAY_MS);
-  }
+  // stopListCrawl, scrollListOnce, openListFromMain hoisted to module scope so the
+  // auto-crawl scheduler can drive them. IPC handlers below just delegate.
 
   ipcMain.on('open-list', async (event, { slug, listId }) => {
     if (!slug || !listId) {
@@ -1130,24 +1479,9 @@ function createWindow() {
       console.log(`[ListCrawl] ${slug} already active, ignoring re-open`);
       return;
     }
-    if (activeListSlug) stopListCrawl('stopped');
-    activeListSlug = slug;
-    listScrollCount = 0;
-    listCapturedThisRun = 0;
-    listOpenedAt = Date.now();
-    const url = `https://x.com/i/lists/${listId}`;
-    console.log(`[ListCrawl] starting ${slug} -> ${url}`);
-    event.sender.send('list-crawl-status', { slug, status: 'started', message: `Loading ${slug}...` });
-    try {
-      await twitterView.webContents.loadURL(url);
-    } catch (err) {
-      console.error('[ListCrawl] navigate failed:', err.message);
-      event.sender.send('list-crawl-status', { slug, status: 'error', message: err.message });
-      stopListCrawl('error');
-      return;
-    }
-    // First burst after initial load + render
-    listScrollTimer = setTimeout(scrollListOnce, 2000);
+    // Manual open clears any pending auto-crawl queue so user takes precedence.
+    autoCrawlQueue = [];
+    openListFromMain(slug, listId);
   });
 
   ipcMain.on('stop-list-crawl', () => {
@@ -1198,6 +1532,15 @@ function createWindow() {
       console.error('[FeedScore] manual error:', err.message);
       event.sender.send('feed-rescore-done', { success: false, error: err.message });
     }
+  });
+
+  // Stop in-flight feed scoring. The current tweet's request finishes (since
+  // we can't cancel fetch mid-flight cleanly), then the loop bails.
+  ipcMain.on('stop-feed-scoring', () => {
+    if (!feedScoringRunning) return;
+    feedScoringAbortRequested = true;
+    console.log('[FeedScore] stop requested');
+    emitFeedProgress({ phase: 'aborting' });
   });
 
   ipcMain.on('circle-tweet-action', async (event, { tweetId, actionType, actionContent }) => {
@@ -1558,6 +1901,9 @@ app.whenReady().then(async () => {
   // then every FEED_SCORE_HEARTBEAT_MS.
   setTimeout(() => runFeedScoring({ source: 'boot' }), 60 * 1000);
   setInterval(() => runFeedScoring({ source: 'heartbeat' }), FEED_SCORE_HEARTBEAT_MS);
+
+  // Auto-crawl scheduler: if user left it `running` last session, resume on boot.
+  scheduleNextAutoCrawl('boot');
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
