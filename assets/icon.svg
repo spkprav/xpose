@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <radialGradient id="bg" cx="0.5" cy="0.4" r="0.7">
+      <stop offset="0" stop-color="#020A02"/>
+      <stop offset="0.55" stop-color="#010601"/>
+      <stop offset="1" stop-color="#000300"/>
+    </radialGradient>
+
+    <!-- clip matches PNG mask boundary exactly -->
+    <clipPath id="bgClip">
+      <circle cx="512" cy="512" r="500"/>
+    </clipPath>
+  </defs>
+
+  <!-- background -->
+  <circle cx="512" cy="512" r="496" fill="url(#bg)"/>
+
+  <!-- dim: outer arcs of the two circles -->
+  <g clip-path="url(#bgClip)" fill="none" stroke="#00FF41" stroke-width="10" stroke-opacity="0.22">
+    <circle cx="347" cy="512" r="331"/>
+    <circle cx="677" cy="512" r="331"/>
+  </g>
+
+  <!-- bold: lens boundary arcs + pupil drawn on top -->
+  <g clip-path="url(#bgClip)" fill="none" stroke="#00FF41" stroke-width="22" stroke-opacity="1">
+    <path d="M 512 225 A 331 331 0 0 1 512 799"/>
+    <path d="M 512 225 A 331 331 0 0 0 512 799"/>
+    <circle cx="512" cy="512" r="166"/>
+  </g>
+</svg>

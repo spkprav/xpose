@@ -157,6 +157,7 @@ function createWindow() {
   win = new BrowserWindow({
     width: 1280,
     height: 800,
+    icon: path.resolve(app.getAppPath(), 'assets', process.platform === 'win32' ? 'icon.png' : 'icon.png'),
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
@@ -1517,6 +1518,9 @@ if (!gotSingleInstanceLock) {
 }
 
 app.whenReady().then(async () => {
+  if (process.platform === 'darwin' && app.dock) {
+    try { app.dock.setIcon(path.resolve(app.getAppPath(), 'assets', 'icon.png')); } catch {}
+  }
   settings = new Settings();
   db.configure(settings.get('database'));
   try {

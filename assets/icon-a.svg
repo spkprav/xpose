@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <radialGradient id="bg" cx="0.5" cy="0.45" r="0.65">
+      <stop offset="0" stop-color="#001A06"/>
+      <stop offset="0.5" stop-color="#000D03"/>
+      <stop offset="1" stop-color="#000200"/>
+    </radialGradient>
+
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <clipPath id="bgClip">
+      <circle cx="512" cy="512" r="490"/>
+    </clipPath>
+  </defs>
+
+  <!-- background, no border -->
+  <circle cx="512" cy="512" r="496" fill="url(#bg)"/>
+
+  <g clip-path="url(#bgClip)" fill="none">
+    <!-- full inner circles — faint geometry trace -->
+    <circle cx="347" cy="512" r="331" stroke="#00AA33" stroke-width="2" stroke-opacity="0.25"/>
+    <circle cx="677" cy="512" r="331" stroke="#00AA33" stroke-width="2" stroke-opacity="0.25"/>
+
+    <!-- eye: bold lens arcs + pupil, with glow -->
+    <g stroke="#00AA33" stroke-width="14" filter="url(#glow)">
+      <path d="M 512 225 A 331 331 0 0 1 512 799"/>
+      <path d="M 512 225 A 331 331 0 0 0 512 799"/>
+      <circle cx="512" cy="512" r="166"/>
+    </g>
+  </g>
+</svg>
