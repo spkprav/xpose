@@ -1,0 +1,3 @@
+[submodule "vendor/x-algorithm"]
+	path = vendor/x-algorithm
+	url = git@github.com:xai-org/x-algorithm.git
