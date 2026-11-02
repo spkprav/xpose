@@ -1,6 +1,8 @@
 -- xPose Database Schema
 -- Run this against your PostgreSQL database to create the tables
 
+CREATE EXTENSION IF NOT EXISTS vector;
+
 -- Tweets table - stores all fetched tweets
 CREATE TABLE IF NOT EXISTS tweets (
     id BIGINT PRIMARY KEY,                          -- Twitter tweet ID

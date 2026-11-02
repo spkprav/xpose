@@ -33,7 +33,7 @@ This is personal-tooling. Fork it, point it at your circle, see what you actuall
 ## Prerequisites
 
 - Node 18+ and npm
-- Docker (recommended) **or** local Postgres 14+
+- Local Postgres 14+ on port 5432
 - Optional: Ollama for local LLM keyword extraction (auto-installed by `npm run wiki:setup`)
 
 ## Install
@@ -42,37 +42,18 @@ This is personal-tooling. Fork it, point it at your circle, see what you actuall
 git clone https://github.com/spkprav/xpose
 cd xpose
 npm install
-cp .env.example .env       # defaults match the docker setup below
+cp .env.example .env       # localhost:5432 / postgres / postgres / xpose
 ```
 
 ## Set up the database
 
-### Option A: Docker (recommended)
-
-Runs Postgres 16 in a container on port `54329` (non-default to avoid clashing with any local Postgres).
+Uses the system Postgres on port `5432` (database `xpose`).
 
 ```bash
-npm run db:up         # start container, auto-loads schema.sql on first boot
-npm run db:psql       # open psql shell in the container (sanity check)
+npm run db:create     # create the xpose database if it does not exist
+npm run db:migrate    # apply schema.sql (idempotent)
+npm run db:psql       # open a psql shell
 ```
-
-Other helpers:
-
-```bash
-npm run db:migrate    # re-apply schema.sql (idempotent; use after schema edits)
-npm run db:logs       # tail postgres logs
-npm run db:down       # stop container (data persists in named volume)
-npm run db:reset      # destroy volume + restart fresh (DANGER: wipes data)
-```
-
-### Option B: Local Postgres
-
-```bash
-createdb xpose
-psql -d xpose -f schema.sql
-```
-
-Then update `.env` and the Settings panel to point at your local instance.
 
 ## Run
 
@@ -84,7 +65,7 @@ npm start      # plain electron .
 On first launch:
 
 1. Open **Settings** in the sidebar.
-2. Confirm **Database** matches your setup (defaults are localhost:54329 / postgres / postgres / xpose for docker).
+2. Confirm **Database** matches your setup (defaults are localhost:5432 / postgres / postgres / xpose).
 3. Configure **LLM Provider** (Ollama defaults to `localhost:11434`).
 4. Add **Feed Links**. one URL per line for X lists / community pages you want to harvest.
 5. Save.
