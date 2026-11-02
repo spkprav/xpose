@@ -147,6 +147,90 @@ ipcRenderer.on('platform-changed', (_e, { platform }) => {
 ipcRenderer.send('get-platform');
 
 // ═══════════════════════════════════════════════════
+// Product tabs. X is this sidebar. Home is a separate page that reloads
+// itself. The sidebar is not part of that page.
+// ═══════════════════════════════════════════════════
+let browserTab = 'x';
+let homeStatus = null;
+
+function applyBrowserTab(tab) {
+  browserTab = tab === 'home' ? 'home' : 'x';
+  document.body.classList.toggle('browser-tab-home', browserTab === 'home');
+  $$('.browser-tab').forEach(btn => {
+    const on = btn.dataset.browserTab === browserTab;
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  renderHomeMeta();
+}
+
+function formatAgo(ts) {
+  if (!ts) return '';
+  const sec = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (sec < 15) return 'just now';
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.round(min / 60);
+  return `${hr}h ago`;
+}
+
+function renderHomeMeta() {
+  const el = $('#home-tab-meta');
+  if (!el) return;
+  const status = homeStatus;
+  if (!status) {
+    el.textContent = '';
+    return;
+  }
+  if (status.refreshing) {
+    el.textContent = 'refreshing';
+    return;
+  }
+  const last = status.last || {};
+  const bits = [];
+  if (last.tweets) bits.push(`${last.tweets} tweets`);
+  if (last.news) bits.push(`${last.news} news`);
+  if (last.trends) bits.push(`${last.trends} trends`);
+  if (last.people) bits.push(`${last.people} people`);
+  const when = formatAgo(status.lastRefreshAt);
+  if (status.lastError && !bits.length) {
+    el.textContent = status.lastError;
+    return;
+  }
+  if (!bits.length) {
+    el.textContent = when ? `refreshed ${when}` : '';
+    return;
+  }
+  el.textContent = when ? `${bits.join(', ')} · ${when}` : bits.join(', ');
+}
+
+$$('.browser-tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const tab = btn.dataset.browserTab;
+    if (tab === browserTab) return;
+    applyBrowserTab(tab);
+    ipcRenderer.send('set-browser-tab', { tab });
+  });
+});
+
+$('#btn-home-reload')?.addEventListener('click', () => {
+  ipcRenderer.send('home-refresh');
+});
+
+ipcRenderer.on('browser-tab-changed', (_event, { tab } = {}) => {
+  applyBrowserTab(tab);
+});
+
+ipcRenderer.on('home-status', (_event, status) => {
+  homeStatus = status || null;
+  renderHomeMeta();
+});
+
+setInterval(renderHomeMeta, 15000);
+ipcRenderer.send('get-browser-tab');
+
+// ═══════════════════════════════════════════════════
 // Tab navigation
 // ═══════════════════════════════════════════════════
 $$('.tab-btn').forEach(btn => {

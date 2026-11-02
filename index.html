@@ -25,6 +25,12 @@
   <link rel="stylesheet" href="./renderer/styles.css">
 </head>
 <body class="h-screen overflow-hidden bg-x-bg text-x-text">
+  <div id="browser-tabs" role="tablist" aria-label="Pages">
+    <button type="button" class="browser-tab active" data-browser-tab="x" role="tab" aria-selected="true">X</button>
+    <button type="button" class="browser-tab" data-browser-tab="home" role="tab" aria-selected="false" title="Reloads x.com/home every 5 minutes">Home</button>
+    <button type="button" id="btn-home-reload" class="browser-tab-reload" title="Reload home now">Reload</button>
+    <span id="home-tab-meta" class="browser-tab-meta"></span>
+  </div>
   <div id="content" class="h-full"></div>
 
   <div id="sidebar" class="fixed top-0 right-0 h-full bg-x-surface border-l border-x-border flex flex-col" style="width:320px">

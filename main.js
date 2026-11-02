@@ -28,9 +28,15 @@ const { getIdentity } = require('./lib/identity');
 const LiveRunner = require('./lib/live/runner');
 const { isLiveCaptureUrl } = require('./lib/live/extract');
 const LIVE_PAGE_HOOK = require('./lib/live/page-hook');
+const HOME_PAGE_HOOK = require('./lib/home/page-hook');
+const { HomeRefresh, HOME_URL } = require('./lib/home/refresh');
 
-let win, twitterView, crawlView, linkedinView, settings, llmClient;
+let win, twitterView, crawlView, linkedinView, homeView, settings, llmClient;
 let activePlatform = 'x';
+// Product tab. 'x' is the existing sidebar app. 'home' is a separate page
+// that reloads x.com/home on its own. Switching it does not drive the other views.
+let browserTab = 'x';
+let homeRefresh = null;
 let pendingFetch = false;
 let fetchedTweets = [];
 let currentLinkIndex = 0;
@@ -574,6 +580,18 @@ function createWindow() {
   });
   linkedinView.webContents.setUserAgent(REAL_CHROME_UA);
 
+  // Separate X page on the same login. It only reloads home. Live and the
+  // crawler keep using twitterView and crawlView.
+  homeView = new BrowserView({
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.resolve(app.getAppPath(), 'preload.js'),
+      session: ses,
+      backgroundThrottling: false,
+    },
+  });
+
   // Auto-snapshot every page load on linkedinView. Fires regardless of
   // workflow state — so even if the workflow errors or you quit mid-run,
   // HTML is on disk for inspection. Phase label derived from URL path.
@@ -626,12 +644,15 @@ function createWindow() {
     `).catch(() => {});
   });
 
-  win.addBrowserView(crawlView);    // bottom layer (X crawler)
+  win.addBrowserView(homeView);     // bottom layer, refreshes underneath
+  win.addBrowserView(crawlView);    // X crawler
   win.addBrowserView(linkedinView); // middle layer
   win.addBrowserView(twitterView);  // top layer by default
 
   activePlatform = settings.get('activePlatform') || 'x';
+  browserTab = settings.get('browserTab') === 'home' ? 'home' : 'x';
   applyPlatform(activePlatform);
+  armHomeRefresh();
 
   twitterView.webContents.loadURL('https://x.com/home');
   linkedinView.webContents.loadURL('https://www.linkedin.com/feed/');
@@ -652,15 +673,11 @@ function createWindow() {
         powerBlockerId = null;
         console.log('[Power] App suspension unblocked');
       }
-      // Swap top BrowserView so crawlView gets viewport focus (better pagination triggers)
-      // Only applies in X mode. In LinkedIn mode the X crawl can keep running
-      // headlessly, but we never surface it on top of linkedinView.
-      if (win && !win.isDestroyed() && twitterView && crawlView && activePlatform === 'x') {
-        if (status.state === 'crawling') {
-          win.setTopBrowserView(crawlView);
-        } else if (status.state === 'idle' || status.state === 'paused') {
-          win.setTopBrowserView(twitterView);
-        }
+      // Crawl still wants the viewport while the X tab is showing. The Home
+      // tab stays on top of its own page, so a crawl state change must not
+      // pull that tab out from under the user.
+      if (win && !win.isDestroyed() && activePlatform === 'x' && browserTab !== 'home') {
+        raiseActiveView();
       }
     },
     onFeedRefresh: () => {
@@ -915,6 +932,20 @@ function createWindow() {
 
   ipcMain.on('set-platform', (event, { platform } = {}) => {
     applyPlatform(platform);
+  });
+
+  ipcMain.on('get-browser-tab', () => {
+    if (!win || win.isDestroyed()) return;
+    win.webContents.send('browser-tab-changed', { tab: browserTab });
+    if (homeRefresh) win.webContents.send('home-status', homeRefresh.snapshot());
+  });
+
+  ipcMain.on('set-browser-tab', (_event, { tab } = {}) => {
+    applyBrowserTab(tab);
+  });
+
+  ipcMain.on('home-refresh', () => {
+    homeRefresh?.refresh();
   });
 
   ipcMain.on('reload-linkedin', () => {
@@ -1226,6 +1257,10 @@ function createWindow() {
   // Reload active platform view
   // ==================
   ipcMain.on('reload-twitter-view', () => {
+    if (browserTab === 'home') {
+      homeRefresh?.refresh();
+      return;
+    }
     const view = activePlatform === 'linkedin' ? linkedinView : twitterView;
     if (view && !view.webContents.isDestroyed()) view.webContents.reload();
   });
@@ -1234,7 +1269,9 @@ function createWindow() {
   // Get Current URL (of active platform view)
   // ==================
   ipcMain.on('get-current-url', () => {
-    const view = activePlatform === 'linkedin' ? linkedinView : twitterView;
+    const view = browserTab === 'home'
+      ? homeView
+      : (activePlatform === 'linkedin' ? linkedinView : twitterView);
     const url = view && !view.webContents.isDestroyed() ? view.webContents.getURL() : '';
     win.webContents.send('current-url', url);
   });
@@ -2586,6 +2623,11 @@ function createWindow() {
       liveRunner.pageHook = true;
       liveRunner.accept(url, body);
     });
+    ipcMain.on('home-net-body', (_event, { url, body } = {}) => {
+      if (!homeRefresh || !url || !body) return;
+      if (!isLiveCaptureUrl(url)) return;
+      homeRefresh.accept(url, body);
+    });
   }
 
   if (settings.get('liveCapture')?.running) {
@@ -2608,6 +2650,9 @@ function createWindow() {
 // Hidden bounds = 0×0 offscreen. Used to "remove" a BrowserView from view
 // without detaching it (preserves session, debugger, scroll state).
 const HIDDEN_BOUNDS = { x: 0, y: 0, width: 0, height: 0 };
+// Keep in sync with #browser-tabs in renderer/styles.css. The strip is HTML,
+// so every BrowserView starts below it.
+const TAB_BAR_HEIGHT = 36;
 
 function resizeTwitterView() {
   if (!win || win.isDestroyed()) return;
@@ -2616,9 +2661,10 @@ function resizeTwitterView() {
   const bounds = win.getContentBounds();
   const mobileWidth = 375;
   const normalSidebarWidth = 320;
+  const height = Math.max(0, bounds.height - TAB_BAR_HEIGHT);
 
   const contentWidth = focusMode ? mobileWidth : Math.max(0, bounds.width - normalSidebarWidth);
-  const visibleTarget = { x: 0, y: 0, width: contentWidth, height: bounds.height };
+  const visibleTarget = { x: 0, y: TAB_BAR_HEIGHT, width: contentWidth, height };
 
   const xTarget   = activePlatform === 'x'        ? visibleTarget : HIDDEN_BOUNDS;
   const liTarget  = activePlatform === 'linkedin' ? visibleTarget : HIDDEN_BOUNDS;
@@ -2637,16 +2683,100 @@ function resizeTwitterView() {
     crawlView.setBounds(crawlTarget);
     try { crawlView.webContents.invalidate(); } catch {}
   }
+  if (homeView && !homeView.webContents.isDestroyed()) {
+    // On the Home tab the page fills the window (no sidebar). Otherwise it
+    // keeps the same column as X, underneath, so a reload still has a viewport
+    // and does not paint over the sidebar.
+    const homeTarget = browserTab === 'home'
+      ? { x: 0, y: TAB_BAR_HEIGHT, width: bounds.width, height }
+      : visibleTarget;
+    homeView.setBounds(homeTarget);
+    try { homeView.webContents.invalidate(); } catch {}
+  }
 
-  // Z-order: whichever BrowserView matches activePlatform is on top.
-  // Exception: while crawling in X mode, crawlView gets top to capture viewport
-  // focus for pagination triggers (see crawler.js).
+  raiseActiveView();
+}
+
+// Which page is visible. The others keep their bounds and keep running.
+function raiseActiveView() {
+  if (!win || win.isDestroyed()) return;
+  if (browserTab === 'home' && homeView && !homeView.webContents.isDestroyed()) {
+    win.setTopBrowserView(homeView);
+    return;
+  }
   if (activePlatform === 'x') {
     const top = crawler && crawler.state === 'crawling' ? crawlView : twitterView;
     if (top) win.setTopBrowserView(top);
   } else if (linkedinView) {
     win.setTopBrowserView(linkedinView);
   }
+}
+
+function applyBrowserTab(tab) {
+  const next = tab === 'home' ? 'home' : 'x';
+  browserTab = next;
+  if (settings && settings.get('browserTab') !== next) settings.set('browserTab', next);
+  resizeTwitterView();
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('browser-tab-changed', { tab: next });
+  }
+}
+
+// Arms the home page hook, then loads x.com/home. Later reloads come from
+// HomeRefresh and never call loadURL on twitterView.
+function armHomeRefresh() {
+  if (!homeView || homeRefresh) return;
+  homeRefresh = new HomeRefresh({
+    getView: () => (homeView && !homeView.webContents.isDestroyed() ? homeView : null),
+    db,
+    emit: (status) => {
+      if (win && !win.isDestroyed()) win.webContents.send('home-status', status);
+    },
+  });
+
+  const wc = homeView.webContents;
+  // A reload can lift this view above the page the user is looking at.
+  // Put their tab back. The home page keeps its own bounds either way.
+  const keepUserTab = () => {
+    if (browserTab !== 'home') raiseActiveView();
+  };
+  wc.on('did-start-loading', () => {
+    homeRefresh?.onStart();
+    keepUserTab();
+  });
+  wc.on('did-stop-loading', () => {
+    homeRefresh?.onSettle();
+    keepUserTab();
+  });
+  wc.on('did-fail-load', (_event, code, desc, _url, isMainFrame) => {
+    if (!isMainFrame || code === -3) return;
+    homeRefresh?.fail(desc);
+  });
+
+  const load = () => {
+    if (!homeRefresh || wc.isDestroyed()) return;
+    homeRefresh.start();
+    homeRefresh.begin();
+    wc.loadURL(HOME_URL).catch(err => homeRefresh.fail(err.message));
+  };
+
+  try {
+    wc.debugger.attach('1.3');
+  } catch (err) {
+    console.error('[Home] debugger attach failed:', err.message);
+    load();
+    return;
+  }
+
+  wc.debugger.sendCommand('Page.enable').then(() => (
+    wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: HOME_PAGE_HOOK })
+  )).then(() => {
+    console.log('[Home] page hook armed');
+    load();
+  }).catch(err => {
+    console.error('[Home] page hook arm failed:', err.message);
+    load();
+  });
 }
 
 function applyPlatform(platform) {

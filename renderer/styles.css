@@ -4,6 +4,80 @@
 
 #sidebar {
   transition: width 0.2s ease-out;
+  top: 36px;
+  height: calc(100% - 36px);
+}
+
+/* Product tabs. Height stays in sync with TAB_BAR_HEIGHT in main.js. */
+#browser-tabs {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 36px;
+  z-index: 40;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 0 8px;
+  background: #000000;
+  border-bottom: 1px solid #2f3336;
+}
+
+.browser-tab {
+  appearance: none;
+  border: 1px solid transparent;
+  border-bottom: none;
+  background: transparent;
+  color: #71767b;
+  font-size: 12px;
+  font-weight: 600;
+  height: 28px;
+  padding: 0 14px;
+  border-radius: 8px 8px 0 0;
+  cursor: pointer;
+}
+
+.browser-tab:hover {
+  color: #e7e9ea;
+}
+
+.browser-tab.active {
+  color: #e7e9ea;
+  background: #16181c;
+  border-color: #2f3336;
+}
+
+.browser-tab-meta {
+  margin-left: auto;
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: #71767b;
+  white-space: nowrap;
+}
+
+.browser-tab-reload {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #71767b;
+  font-size: 11px;
+  font-weight: 600;
+  height: 28px;
+  padding: 0 8px;
+  cursor: pointer;
+}
+
+.browser-tab-reload:hover {
+  color: #e7e9ea;
+}
+
+body:not(.browser-tab-home) .browser-tab-reload {
+  display: none;
+}
+
+body.browser-tab-home #sidebar {
+  display: none;
 }
 
 /* Header */
