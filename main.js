@@ -18,14 +18,29 @@ const { generateDrafts } = require('./lib/drafts');
 const wikiExport = require('./lib/wiki-export');
 const { scoreUnscoredFeed, setConfig: setScorerConfig } = require('./lib/feed/score-tweets');
 const telegram = require('./lib/telegram');
+const prospects = require('./lib/prospects');
+const { generateOutreach } = require('./lib/prospects/outreach');
+const linkedinRecon = require('./lib/linkedin/recon');
+const { snapshotHtml: linkedinSnapshotHtml, SNAP_DIR: LI_SNAP_DIR } = require('./lib/linkedin/snapshot');
+const { sanitizeMany: sanitizeLinkedinRows } = require('./lib/linkedin/quality');
+const workflowsRegistry = require('./lib/workflows');
+const { getIdentity } = require('./lib/identity');
 
-let win, twitterView, crawlView, settings, llmClient;
+let win, twitterView, crawlView, linkedinView, settings, llmClient;
+let activePlatform = 'x';
 let pendingFetch = false;
 let fetchedTweets = [];
 let currentLinkIndex = 0;
 let feedLinks = [];
 const requestMap = new Map();
 const crawlRequestMap = new Map();
+// Registered while an X-prospect discovery workflow is running. Receives raw
+// SearchTimeline GraphQL responses from crawlView. Null when no workflow active.
+let xSearchListener = null;
+// Registered during the tweet-enrichment phase of the X-prospect workflow.
+// Routes UserTweets / UserTweetsAndReplies bypass the main crawler state
+// machine — the workflow handles save itself, per-handle.
+let xUserTweetsListener = null;
 const listRequestMap = new Map(); // for Followers/Following interception on main view
 let focusMode = false;
 let crawler = null;
@@ -525,10 +540,95 @@ function createWindow() {
       backgroundThrottling: false,
     },
   });
-  win.addBrowserView(crawlView);  // bottom layer
-  win.addBrowserView(twitterView); // top layer
-  resizeTwitterView();
+  // LinkedIn view: separate session partition so the user can log in
+  // independently of the X account. Spoof to look like real Chrome so
+  // LinkedIn's automation-detection doesn't flag the Electron UA.
+  const liSes = session.fromPartition('persist:linkedin');
+  const REAL_CHROME_UA =
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+  liSes.setUserAgent(REAL_CHROME_UA);
+  // Strip Electron UA hint headers + Sec-CH-UA spoofs.
+  liSes.webRequest.onBeforeSendHeaders((details, callback) => {
+    const headers = details.requestHeaders || {};
+    headers['User-Agent'] = REAL_CHROME_UA;
+    headers['Sec-CH-UA'] = '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"';
+    headers['Sec-CH-UA-Mobile'] = '?0';
+    headers['Sec-CH-UA-Platform'] = '"macOS"';
+    callback({ requestHeaders: headers });
+  });
+
+  linkedinView = new BrowserView({
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.resolve(app.getAppPath(), 'preload.js'),
+      session: liSes,
+      backgroundThrottling: false,
+    },
+  });
+  linkedinView.webContents.setUserAgent(REAL_CHROME_UA);
+
+  // Auto-snapshot every page load on linkedinView. Fires regardless of
+  // workflow state — so even if the workflow errors or you quit mid-run,
+  // HTML is on disk for inspection. Phase label derived from URL path.
+  linkedinView.webContents.on('did-finish-load', async () => {
+    if (linkedinView.webContents.isDestroyed()) return;
+    try {
+      const url = linkedinView.webContents.getURL();
+      // Skip about:blank, login redirects, captcha pages — recognizable noise.
+      if (!url || !/^https?:\/\/(www\.)?linkedin\.com\//.test(url)) return;
+      const u = new URL(url);
+      let phase = 'page';
+      if (/\/feed\/?$/.test(u.pathname))                          phase = 'feed';
+      else if (/\/mynetwork\/invite-connect\/connections/.test(u.pathname)) phase = 'connections';
+      else if (/\/mynetwork\//.test(u.pathname))                  phase = 'mynetwork';
+      else if (/\/search\/results\/people/.test(u.pathname)) {
+        const kw = u.searchParams.get('keywords') || 'unknown';
+        const pg = u.searchParams.get('page') || '1';
+        phase = `search-${kw.replace(/\s+/g, '_')}-p${pg}`;
+      }
+      else if (/\/in\//.test(u.pathname))                         phase = 'profile';
+      else                                                         phase = 'page-' + u.pathname.replace(/\W+/g, '_').slice(0, 40);
+      // Wait briefly for client-side hydration before snapshotting.
+      setTimeout(() => linkedinSnapshotHtml(linkedinView, `auto-${phase}`).catch(() => {}), 3000);
+    } catch (_) {}
+  });
+
+  // Inject browser-fingerprint spoofs on every navigation BEFORE page scripts
+  // run. Hides navigator.webdriver, normalizes plugins/languages, removes the
+  // Electron-specific window globals LinkedIn could fingerprint.
+  linkedinView.webContents.on('dom-ready', () => {
+    if (linkedinView.webContents.isDestroyed()) return;
+    linkedinView.webContents.executeJavaScript(`
+      (function() {
+        try {
+          Object.defineProperty(navigator, 'webdriver', { configurable: true, get: () => false });
+        } catch (_) {}
+        try {
+          // Plugins + languages = real-browser defaults.
+          Object.defineProperty(navigator, 'languages', { configurable: true, get: () => ['en-US', 'en'] });
+        } catch (_) {}
+        try {
+          // Remove Electron globals if present (rare with contextIsolation but belt+suspenders).
+          delete window.require; delete window.process; delete window.module;
+        } catch (_) {}
+        try {
+          // Chrome's window.chrome detection trick: ensure it exists.
+          if (!window.chrome) window.chrome = { runtime: {} };
+        } catch (_) {}
+      })();
+    `).catch(() => {});
+  });
+
+  win.addBrowserView(crawlView);    // bottom layer (X crawler)
+  win.addBrowserView(linkedinView); // middle layer
+  win.addBrowserView(twitterView);  // top layer by default
+
+  activePlatform = settings.get('activePlatform') || 'x';
+  applyPlatform(activePlatform);
+
   twitterView.webContents.loadURL('https://x.com/home');
+  linkedinView.webContents.loadURL('https://www.linkedin.com/feed/');
   win.loadFile('index.html');
 
   let powerBlockerId = null;
@@ -547,7 +647,9 @@ function createWindow() {
         console.log('[Power] App suspension unblocked');
       }
       // Swap top BrowserView so crawlView gets viewport focus (better pagination triggers)
-      if (win && !win.isDestroyed() && twitterView && crawlView) {
+      // Only applies in X mode. In LinkedIn mode the X crawl can keep running
+      // headlessly, but we never surface it on top of linkedinView.
+      if (win && !win.isDestroyed() && twitterView && crawlView && activePlatform === 'x') {
         if (status.state === 'crawling') {
           win.setTopBrowserView(crawlView);
         } else if (status.state === 'idle' || status.state === 'paused') {
@@ -757,6 +859,150 @@ function createWindow() {
   // ==================
   // Settings Handlers
   // ==================
+  // ==================
+  // Identity defaults (pre-fill empty inputs from social-wiki/me.md)
+  // ==================
+  ipcMain.on('get-identity-defaults', () => {
+    const id = getIdentity(settings);
+    win.webContents.send('identity-defaults', {
+      identity:        id,
+      outreachContext: id.outreach_context || '',
+      icp:             id.icp || { x: '', linkedin: '' },
+      liSearchSeeds:   id.li_search_seeds || [],
+      xSearchSeeds:    id.x_search_seeds  || [],
+    });
+  });
+
+  ipcMain.on('save-identity', (event, patch = {}) => {
+    try {
+      const current = getIdentity(settings);
+      const ocPatch = patch.outreach_context;
+      const nextOc = typeof ocPatch === 'string'
+        ? { x: ocPatch, linkedin: ocPatch }
+        : {
+            x:        ocPatch?.x        ?? current.outreach_context.x,
+            linkedin: ocPatch?.linkedin ?? current.outreach_context.linkedin,
+          };
+      const next = {
+        ...current,
+        outreach_context: nextOc,
+        icp: {
+          x:        patch.icp?.x        ?? current.icp.x,
+          linkedin: patch.icp?.linkedin ?? current.icp.linkedin,
+        },
+        li_search_seeds: Array.isArray(patch.li_search_seeds) ? patch.li_search_seeds : current.li_search_seeds,
+        x_search_seeds:  Array.isArray(patch.x_search_seeds)  ? patch.x_search_seeds  : current.x_search_seeds,
+      };
+      settings.set('identity', next);
+      win.webContents.send('identity-saved', { ok: true });
+    } catch (err) {
+      win.webContents.send('identity-saved', { ok: false, error: err.message });
+    }
+  });
+
+  // ==================
+  // Platform mode (X / LinkedIn)
+  // ==================
+  ipcMain.on('get-platform', () => {
+    win.webContents.send('platform-changed', { platform: activePlatform });
+  });
+
+  ipcMain.on('set-platform', (event, { platform } = {}) => {
+    applyPlatform(platform);
+  });
+
+  ipcMain.on('reload-linkedin', () => {
+    if (linkedinView && !linkedinView.webContents.isDestroyed()) {
+      linkedinView.webContents.reload();
+    }
+  });
+
+  // ==================
+  // LinkedIn endpoint recon
+  // ==================
+  ipcMain.on('linkedin-recon-start', () => {
+    if (!linkedinView) {
+      win.webContents.send('linkedin-recon-status', { error: 'linkedinView not initialized' });
+      return;
+    }
+    const res = linkedinRecon.attach(linkedinView, {
+      onEvent: (ev) => {
+        if (win && !win.isDestroyed()) win.webContents.send('linkedin-recon-event', ev);
+      },
+      ingestFn: async (rows) => {
+        const clean = sanitizeLinkedinRows(rows);
+        let upserted = 0;
+        for (const r of clean) {
+          try { await prospects.upsertProspect(r); upserted++; } catch (_) {}
+        }
+        return upserted;
+      },
+    });
+    win.webContents.send('linkedin-recon-status', { ...linkedinRecon.status(), result: res });
+  });
+
+  ipcMain.on('linkedin-recon-autostore', (event, { enabled } = {}) => {
+    linkedinRecon.setAutoStore(!!enabled);
+    win.webContents.send('linkedin-recon-status', linkedinRecon.status());
+  });
+
+  ipcMain.on('linkedin-recon-stop', () => {
+    const res = linkedinRecon.detach();
+    win.webContents.send('linkedin-recon-status', { ...linkedinRecon.status(), result: res });
+  });
+
+  ipcMain.on('linkedin-recon-status', () => {
+    win.webContents.send('linkedin-recon-status', linkedinRecon.status());
+  });
+
+  ipcMain.on('linkedin-recon-reset', () => {
+    linkedinRecon.reset();
+    win.webContents.send('linkedin-recon-status', linkedinRecon.status());
+  });
+
+  // Manual snapshot: serialize whatever's currently rendered on linkedinView.
+  ipcMain.on('linkedin-snapshot-current', async (event, { label } = {}) => {
+    if (!linkedinView || linkedinView.webContents.isDestroyed()) {
+      win.webContents.send('linkedin-snapshot-result', { ok: false, error: 'linkedinView not available' });
+      return;
+    }
+    const phase = label || 'manual';
+    const r = await linkedinSnapshotHtml(linkedinView, phase);
+    win.webContents.send('linkedin-snapshot-result', { ...r, snap_dir: LI_SNAP_DIR });
+  });
+
+  // Open snapshots dir in the OS file explorer.
+  ipcMain.on('linkedin-snapshot-open-dir', () => {
+    try { require('electron').shell.openPath(LI_SNAP_DIR); } catch (_) {}
+  });
+
+  // Purge junk rows in DB (Premium Profile, "X celebrates this", post-bodies-as-headlines etc.)
+  ipcMain.on('linkedin-cleanup-junk', async () => {
+    try {
+      const dbPool = db.getPool();
+      const beforeRes = await dbPool.query(`SELECT COUNT(*) FROM prospects WHERE platform='linkedin'`);
+      const before = parseInt(beforeRes.rows[0].count, 10);
+
+      // Drop rows whose display_name matches junk patterns OR headline is a post body / status verb.
+      const r = await dbPool.query(`
+        DELETE FROM prospects
+        WHERE platform = 'linkedin'
+          AND (
+               display_name ~* '(celebrates? this|likes? this|loves? this|reacted|commented|reposted|shared this|Premium Profile|invited you to|finds this insightful)'
+            OR display_name ~* '\\m(View|See|Open|More|Show)\\s'
+            OR headline ~* '(celebrates? this|likes? this|loves? this|reacted|commented|reposted|shared this|Premium Profile)'
+            OR (headline IS NOT NULL AND length(headline) > 240)
+            OR display_name ~* '\\s+(1st|2nd|3rd\\+?|3rd)\\s*$'
+          )
+      `);
+      const afterRes = await dbPool.query(`SELECT COUNT(*) FROM prospects WHERE platform='linkedin'`);
+      const after = parseInt(afterRes.rows[0].count, 10);
+      win.webContents.send('linkedin-cleanup-result', { ok: true, deleted: r.rowCount, before, after });
+    } catch (err) {
+      win.webContents.send('linkedin-cleanup-result', { ok: false, error: err.message });
+    }
+  });
+
   ipcMain.on('get-settings', () => {
     win.webContents.send('settings-loaded', settings.get());
   });
@@ -794,7 +1040,116 @@ function createWindow() {
     if (win && !win.isDestroyed()) win.webContents.send('workflow-state', { ...workflowState });
   });
 
-  ipcMain.on('run-workflow', async (event, { id } = {}) => {
+  ipcMain.on('list-workflows', () => {
+    const items = workflowsRegistry.WORKFLOWS.map(w => ({
+      id: w.id, platform: w.platform, label: w.label, description: w.description,
+    }));
+    event_safe_send('workflows-listed', { items });
+  });
+
+  function event_safe_send(channel, payload) {
+    if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+  }
+
+  ipcMain.on('run-workflow', async (event, { id, opts = {} } = {}) => {
+    console.log(`[Workflow] run-workflow id=${id} opts=${JSON.stringify(opts)}`);
+    // Registry-driven workflows take priority. Legacy 'list-sweep' falls through.
+    const wf = workflowsRegistry.get(id);
+    if (wf) {
+      console.log(`[Workflow] dispatch -> ${wf.label} (${wf.platform})`);
+      try {
+        const ctx = {
+          linkedinView,
+          crawlView,
+          twitterView,
+          recon: linkedinRecon,
+          emitProgress: (phase, payload = {}) => {
+            if (win && !win.isDestroyed()) {
+              win.webContents.send('workflow-progress', { id, phase, ...payload });
+            }
+          },
+          onReconEvent: (ev) => {
+            if (win && !win.isDestroyed()) win.webContents.send('linkedin-recon-event', ev);
+          },
+          ingestFn: async (rows) => {
+            const clean = sanitizeLinkedinRows(rows);
+            let upserted = 0;
+            for (const r of clean) {
+              try { await prospects.upsertProspect(r); upserted++; } catch (_) {}
+            }
+            return upserted;
+          },
+          // ─── X-prospect plumbing ────────────────────────────────────────────
+          setXSearchSink: (fn) => { xSearchListener = fn || null; },
+          clearXSearchSink: () => { xSearchListener = null; },
+          setXUserTweetsSink:   (fn) => { xUserTweetsListener = fn || null; },
+          clearXUserTweetsSink: ()   => { xUserTweetsListener = null; },
+          upsertXProspectsBatch: (rows) => prospects.upsertXProspectsBatch(rows),
+          upsertCircleTweetsBatch: (tweets) => db.upsertCircleTweetsBatch(tweets),
+          saveWebsiteBlurb: (pid, blurb) => prospects.saveWebsiteBlurb(pid, blurb),
+          fetchWebsiteBlurb: (url) => require('./lib/prospects/web-fetch').fetchWebsiteBlurb(url),
+          findProspectIdByHandle: async (handle) => {
+            const { getPool } = require('./lib/db');
+            const r = await getPool().query(
+              `SELECT id, website_url, website_text, followers_count FROM prospects WHERE platform='x' AND handle=$1 LIMIT 1`,
+              [handle]
+            );
+            return r.rows[0] || null;
+          },
+          // List all X handles in the prospects table meeting a follower floor.
+          // Used by skipDiscovery (enrich-only) mode.
+          listXProspectHandles: async ({ minFollowers = 1 } = {}) => {
+            const { getPool } = require('./lib/db');
+            const r = await getPool().query(
+              `SELECT handle FROM prospects WHERE platform='x' AND followers_count >= $1 ORDER BY followers_count DESC NULLS LAST`,
+              [minFollowers]
+            );
+            return r.rows.map(x => x.handle).filter(Boolean);
+          },
+          // True if a handle already has at least one row in circle_tweets.
+          // Used to skip the tweet-pull phase on re-runs.
+          handleHasTweets: async (handle) => {
+            const { getPool } = require('./lib/db');
+            const r = await getPool().query(
+              `SELECT 1 FROM circle_tweets WHERE screen_name = $1 LIMIT 1`,
+              [handle]
+            );
+            return r.rowCount > 0;
+          },
+          // Embed + score helper for the workflow's tail phase. Runs the full
+          // 3-vector embed pass + cosine score vs identity.icp.x. Emits
+          // workflow-progress events stamped `x_embed_*` AND pushes the final
+          // scored row set into the Prospects tab via `prospect-results-loaded`
+          // so the user sees results without a second click.
+          runXEmbedAndScore: async (opts = {}) => {
+            const result = await runXEmbedAndScore({
+              ...opts,
+              onProgress: (stage, payload) => {
+                if (win && !win.isDestroyed()) {
+                  win.webContents.send('workflow-progress', { id, phase: `x_embed_${stage}`, ...payload });
+                }
+              },
+            });
+            if (result?.rows && win && !win.isDestroyed()) {
+              win.webContents.send('prospect-results-loaded', {
+                success: true,
+                search: { id: result.searchId },
+                rows: result.rows,
+              });
+            }
+            return result;
+          },
+          // ────────────────────────────────────────────────────────────────────
+          sleep: (ms) => new Promise(r => setTimeout(r, ms)),
+          getSettings: () => settings.get(),
+        };
+        const result = await wf.run(ctx, opts);
+        event.sender.send('workflow-run-result', { id, ...result });
+      } catch (err) {
+        event.sender.send('workflow-run-result', { id, ok: false, error: err.message });
+      }
+      return;
+    }
     if (id !== 'list-sweep') {
       event.sender.send('workflow-run-result', { ok: false, error: `unknown workflow: ${id}` });
       return;
@@ -862,17 +1217,19 @@ function createWindow() {
   });
 
   // ==================
-  // Reload Twitter View
+  // Reload active platform view
   // ==================
   ipcMain.on('reload-twitter-view', () => {
-    twitterView.webContents.reload();
+    const view = activePlatform === 'linkedin' ? linkedinView : twitterView;
+    if (view && !view.webContents.isDestroyed()) view.webContents.reload();
   });
 
   // ==================
-  // Get Current URL
+  // Get Current URL (of active platform view)
   // ==================
   ipcMain.on('get-current-url', () => {
-    const url = twitterView.webContents.getURL();
+    const view = activePlatform === 'linkedin' ? linkedinView : twitterView;
+    const url = view && !view.webContents.isDestroyed() ? view.webContents.getURL() : '';
     win.webContents.send('current-url', url);
   });
 
@@ -1230,9 +1587,18 @@ function createWindow() {
         const json = JSON.parse(response.body);
         const data = json.data || json;
         console.log(`[CrawlView] Response for ${info.endpointType}, top-level keys:`, Object.keys(data));
-        const before = crawler.capturedTweets.length;
-        crawler.ingestResponse(info.endpointType, data);
-        console.log(`[CrawlView] ${info.endpointType}: +${crawler.capturedTweets.length - before} tweets (total ${crawler.capturedTweets.length})`);
+        // Route SearchTimeline + UserTweets to the active X-prospect workflow
+        // when its sinks are registered. All other endpoints (and any of these
+        // when no sink) flow through the crawler state machine.
+        if (info.endpointType === 'SearchTimeline' && xSearchListener) {
+          try { await xSearchListener(data); } catch (e) { console.error('[CrawlView] xSearchListener error:', e.message); }
+        } else if ((info.endpointType === 'UserTweets' || info.endpointType === 'UserTweetsAndReplies') && xUserTweetsListener) {
+          try { await xUserTweetsListener(info.endpointType, data); } catch (e) { console.error('[CrawlView] xUserTweetsListener error:', e.message); }
+        } else {
+          const before = crawler.capturedTweets.length;
+          crawler.ingestResponse(info.endpointType, data);
+          console.log(`[CrawlView] ${info.endpointType}: +${crawler.capturedTweets.length - before} tweets (total ${crawler.capturedTweets.length})`);
+        }
       } catch (err) {
         console.error(`[CrawlView] Error processing ${info.endpointType}:`, err.message);
       }
@@ -1816,6 +2182,292 @@ function createWindow() {
   });
 
   // ==================
+  // Prospects (Origami-style ICP search)
+  // ==================
+  ipcMain.on('prospect-search', async (event, { platform, prompt, candidateLimit, minScore, minFollowers } = {}) => {
+    try {
+      if (!platform || !prompt) {
+        win.webContents.send('prospect-search-done', { success: false, error: 'platform + prompt required' });
+        return;
+      }
+      const client = getLLMClient();
+      if (!client) {
+        win.webContents.send('prospect-search-done', { success: false, error: 'LLM client not configured. Set an API key in Settings.' });
+        return;
+      }
+      const onProgress = (stage, payload) => {
+        try { win.webContents.send('prospect-search-progress', { stage, ...payload }); } catch (_) {}
+      };
+      const result = await prospects.runSearch({
+        platform,
+        prompt,
+        llmClient: client,
+        candidateLimit: candidateLimit || 25,
+        minScore: minScore != null ? minScore : 40,
+        minFollowers: minFollowers || 0,
+        onProgress,
+      });
+      win.webContents.send('prospect-search-done', { success: true, ...result });
+    } catch (err) {
+      win.webContents.send('prospect-search-done', { success: false, error: err.message });
+    }
+  });
+
+  ipcMain.on('prospect-list-searches', async (event, { platform } = {}) => {
+    try {
+      const rows = await prospects.listSearches(platform);
+      win.webContents.send('prospect-searches-loaded', { success: true, platform, rows });
+    } catch (err) {
+      win.webContents.send('prospect-searches-loaded', { success: false, error: err.message });
+    }
+  });
+
+  ipcMain.on('prospect-load-results', async (event, { searchId, minScore = 0 } = {}) => {
+    try {
+      const search = await prospects.getSearch(searchId);
+      const rows = await prospects.getSearchResults(searchId, { minScore });
+      win.webContents.send('prospect-results-loaded', { success: true, search, rows });
+    } catch (err) {
+      win.webContents.send('prospect-results-loaded', { success: false, error: err.message });
+    }
+  });
+
+  ipcMain.on('prospect-browse-all', async (event, { platform, limit = 300 } = {}) => {
+    try {
+      const rows = await prospects.listAllProspects(platform, { limit });
+      win.webContents.send('prospect-results-loaded', { success: true, browse: true, platform, rows });
+    } catch (err) {
+      win.webContents.send('prospect-results-loaded', { success: false, error: err.message });
+    }
+  });
+
+  ipcMain.on('prospect-enrich-all', async (event, { platform, headlineFilter = null, limit = 2000 } = {}) => {
+    try {
+      if (platform !== 'linkedin') {
+        win.webContents.send('prospect-search-done', { success: false, error: 'Enrichment only supports LinkedIn.' });
+        return;
+      }
+      const token = (settings && settings.get && settings.get('apify')?.token) || null;
+      if (!token) {
+        win.webContents.send('prospect-search-done', { success: false, error: 'Apify token missing. Set settings.apify.token.' });
+        return;
+      }
+      const enrich = require('./lib/linkedin/enrich-apify');
+      const { getPool } = require('./lib/db');
+      const handles = await enrich.listHandlesToEnrich(getPool, { headlineFilter, limit });
+      if (!handles.length) {
+        win.webContents.send('prospect-search-progress', { stage: 'done', message: 'Nothing to enrich. All matching prospects already enriched.' });
+        win.webContents.send('prospect-search-done', { success: true, enriched: 0, total: 0 });
+        return;
+      }
+      const onProgress = (stage, payload) => {
+        try { win.webContents.send('prospect-search-progress', { stage: `enrich_${stage}`, ...payload }); } catch (_) {}
+      };
+      const result = await enrich.enrichProspects({ getPool, token, handles, onProgress, chunkSize: 50 });
+      win.webContents.send('prospect-search-done', { success: true, ...result });
+    } catch (err) {
+      win.webContents.send('prospect-search-done', { success: false, error: err.message });
+    }
+  });
+
+  ipcMain.on('prospect-embed-and-score', async (event, { platform, prompt, embedFirst = true } = {}) => {
+    try {
+      if (platform !== 'linkedin') {
+        win.webContents.send('prospect-search-done', { success: false, error: 'Embedding scoring only supports LinkedIn.' });
+        return;
+      }
+      const cfg = (settings && settings.get && settings.get('openrouter')) || {};
+      const apiKey = cfg.apiKey;
+      if (!apiKey) {
+        win.webContents.send('prospect-search-done', { success: false, error: 'OpenRouter API key missing. Set settings.openrouter.apiKey.' });
+        return;
+      }
+      const ident = getIdentity(settings);
+      const icpText = (prompt && prompt.trim()) || ident.icp?.linkedin || '';
+      if (!icpText) {
+        win.webContents.send('prospect-search-done', { success: false, error: 'No ICP. Type one or set identity.icp.linkedin.' });
+        return;
+      }
+      const embed = require('./lib/prospects/embed');
+      const { getPool } = require('./lib/db');
+      const onProgress = (stage, payload) => {
+        try { win.webContents.send('prospect-search-progress', { stage: `embed_${stage}`, ...payload }); } catch (_) {}
+      };
+      let embedResult = { embedded: 0, failed: 0, total: 0 };
+      if (embedFirst) {
+        embedResult = await embed.embedAllProspects({
+          getPool, apiKey, onProgress, limit: 5000,
+        });
+      }
+      const { searchId, rows } = await embed.scoreByEmbedding({
+        getPool, apiKey, icpText, limit: 200, prompt: icpText,
+      });
+      win.webContents.send('prospect-search-progress', { stage: 'embed_scored', searchId, count: rows.length, top: rows.slice(0, 3) });
+      win.webContents.send('prospect-search-done', { success: true, searchId, embed: embedResult, scored: rows.length });
+      // Auto-load results into the Prospects view.
+      win.webContents.send('prospect-results-loaded', { success: true, search: { id: searchId }, rows });
+    } catch (err) {
+      win.webContents.send('prospect-search-done', { success: false, error: err.message });
+    }
+  });
+
+  // ─── X-prospect embed + 3-way score + daily-ten ────────────────────────────
+  // Shared body used by both the IPC and the workflow's embed-tail. Returns
+  // { searchId, embed: {embedded,failed,total}, scored: N, rows }.
+  async function runXEmbedAndScore({
+    prompt,
+    embedFirst = true,
+    excludeContacted = true,
+    limit = 200,
+    onProgress = () => {},
+  } = {}) {
+    const cfg = (settings && settings.get && settings.get('openrouter')) || {};
+    const apiKey = cfg.apiKey;
+    if (!apiKey) throw new Error('OpenRouter API key missing. Set settings.openrouter.apiKey.');
+    const ident = getIdentity(settings);
+    const icpText = (prompt && prompt.trim()) || ident.icp?.x || '';
+    if (!icpText) throw new Error('No ICP. Type one or set identity.icp.x.');
+
+    const embed = require('./lib/prospects/embed');
+    const webFetch = require('./lib/prospects/web-fetch');
+    const { getPool } = require('./lib/db');
+
+    let embedResult = { embedded: 0, failed: 0, total: 0 };
+    if (embedFirst) {
+      embedResult = await embed.embedAllXProspects({
+        getPool, apiKey, onProgress,
+        enrichFn: async (p) => {
+          const tweets = await prospects.getRecentTweetsForHandle(p.handle, 20);
+          let webText = p.website_text || '';
+          if (!webText && p.website_url) {
+            try {
+              const blurb = await webFetch.fetchWebsiteBlurb(p.website_url);
+              webText = blurb.text || '';
+              if (webText) await prospects.saveWebsiteBlurb(p.id, { url: blurb.url, text: webText });
+            } catch (_) {}
+          }
+          return { tweets, webText };
+        },
+        limit: 2000,
+      });
+    }
+
+    const { searchId, rows } = await embed.scoreXByEmbedding({
+      getPool, apiKey, icpText, limit, prompt: icpText, excludeContacted,
+    });
+    return { searchId, embed: embedResult, scored: rows.length, rows };
+  }
+
+  ipcMain.on('prospect-x-embed-and-score', async (event, { prompt, embedFirst = true, excludeContacted = true } = {}) => {
+    try {
+      const onProgress = (stage, payload) => {
+        try { win.webContents.send('prospect-search-progress', { stage: `x_embed_${stage}`, ...payload }); } catch (_) {}
+      };
+      const { searchId, embed: embedResult, scored, rows } = await runXEmbedAndScore({ prompt, embedFirst, excludeContacted, onProgress });
+      win.webContents.send('prospect-search-progress', { stage: 'x_embed_scored', searchId, count: scored, top: rows.slice(0, 3) });
+      win.webContents.send('prospect-search-done', { success: true, searchId, embed: embedResult, scored });
+      win.webContents.send('prospect-results-loaded', { success: true, search: { id: searchId }, rows });
+    } catch (err) {
+      console.error('[prospect-x-embed-and-score]', err);
+      win.webContents.send('prospect-search-done', { success: false, error: err.message });
+    }
+  });
+
+  ipcMain.on('prospect-x-daily-ten', async (event, { limit = 10, minScore = 0 } = {}) => {
+    try {
+      const { searchId, rows } = await prospects.listTopXProspectsUncontacted({ limit, minScore });
+      win.webContents.send('prospect-results-loaded', {
+        success: true,
+        dailyTen: true,
+        platform: 'x',
+        search: searchId ? { id: searchId } : null,
+        rows,
+      });
+    } catch (err) {
+      win.webContents.send('prospect-results-loaded', { success: false, error: err.message });
+    }
+  });
+
+  ipcMain.on('prospect-score-all', async (event, { platform, prompt } = {}) => {
+    try {
+      if (!platform) {
+        win.webContents.send('prospect-search-done', { success: false, error: 'platform required' });
+        return;
+      }
+      const ident = getIdentity(settings);
+      const finalPrompt = (prompt && prompt.trim()) || ident.icp?.[platform] || '';
+      if (!finalPrompt) {
+        win.webContents.send('prospect-search-done', { success: false, error: `No ICP prompt. Type one or set identity.icp.${platform} in Settings.` });
+        return;
+      }
+      const client = getLLMClient();
+      if (!client) {
+        win.webContents.send('prospect-search-done', { success: false, error: 'LLM client not configured. Set an API key in Settings.' });
+        return;
+      }
+      const onProgress = (stage, payload) => {
+        try { win.webContents.send('prospect-search-progress', { stage, ...payload }); } catch (_) {}
+      };
+      const result = await prospects.runFullScoring({
+        platform, prompt: finalPrompt, llmClient: client, onProgress, concurrency: 5,
+      });
+      win.webContents.send('prospect-search-done', { success: true, ...result });
+    } catch (err) {
+      win.webContents.send('prospect-search-done', { success: false, error: err.message });
+    }
+  });
+
+  ipcMain.on('prospect-generate-outreach', async (event, { prospectId, searchId, platform, channel, context, prospect } = {}) => {
+    try {
+      const client = getLLMClient();
+      if (!client) {
+        win.webContents.send('prospect-outreach-generated', { success: false, error: 'LLM client not configured.' });
+        return;
+      }
+      const ident = getIdentity(settings);
+      const ocPlatform = ident.outreach_context?.[platform] || ident.outreach_context?.x || 'an indie builder';
+      const body = await generateOutreach(client, {
+        prospect, platform, channel,
+        context: context || ocPlatform,
+      });
+      const draftId = await prospects.saveOutreachDraft({
+        prospectId, searchId, platform, channel, body,
+        model: settings.getActiveProvider().config?.model || null,
+      });
+      win.webContents.send('prospect-outreach-generated', { success: true, id: draftId, body });
+    } catch (err) {
+      win.webContents.send('prospect-outreach-generated', { success: false, error: err.message });
+    }
+  });
+
+  ipcMain.on('prospect-list-outreach', async (event, { platform, status } = {}) => {
+    try {
+      const rows = await prospects.listOutreachDrafts({ platform, status });
+      win.webContents.send('prospect-outreach-loaded', { success: true, rows });
+    } catch (err) {
+      win.webContents.send('prospect-outreach-loaded', { success: false, error: err.message });
+    }
+  });
+
+  ipcMain.on('prospect-update-outreach', async (event, { id, body, status } = {}) => {
+    try {
+      await prospects.updateOutreachDraft(id, { body, status });
+      win.webContents.send('prospect-outreach-updated', { success: true, id });
+    } catch (err) {
+      win.webContents.send('prospect-outreach-updated', { success: false, error: err.message });
+    }
+  });
+
+  ipcMain.on('prospect-ingest-linkedin', async (event, { rows } = {}) => {
+    try {
+      const ids = await prospects.ingestLinkedinProspects(rows || []);
+      win.webContents.send('prospect-linkedin-ingested', { success: true, count: ids.length });
+    } catch (err) {
+      win.webContents.send('prospect-linkedin-ingested', { success: false, error: err.message });
+    }
+  });
+
+  // ==================
   // Export Social Wiki
   // ==================
   ipcMain.on('export-wiki', async () => {
@@ -1841,32 +2493,57 @@ function createWindow() {
   win.on('leave-full-screen', scheduleResize);
 }
 
+// Hidden bounds = 0×0 offscreen. Used to "remove" a BrowserView from view
+// without detaching it (preserves session, debugger, scroll state).
+const HIDDEN_BOUNDS = { x: 0, y: 0, width: 0, height: 0 };
+
 function resizeTwitterView() {
   if (!win || win.isDestroyed()) return;
   // getContentBounds() = inner area (no title bar / chrome). BrowserView.setBounds
-  // is in content coords, so this is the correct source. Using getBounds() leaves
-  // a ~28px black gap on macOS because the BrowserView gets sized to the OUTER
-  // window dimensions but rendered relative to the content origin.
+  // is in content coords, so this is the correct source.
   const bounds = win.getContentBounds();
   const mobileWidth = 375;
   const normalSidebarWidth = 320;
 
-  const twitterWidth = focusMode ? mobileWidth : Math.max(0, bounds.width - normalSidebarWidth);
-  const target = { x: 0, y: 0, width: twitterWidth, height: bounds.height };
+  const contentWidth = focusMode ? mobileWidth : Math.max(0, bounds.width - normalSidebarWidth);
+  const visibleTarget = { x: 0, y: 0, width: contentWidth, height: bounds.height };
+
+  const xTarget   = activePlatform === 'x'        ? visibleTarget : HIDDEN_BOUNDS;
+  const liTarget  = activePlatform === 'linkedin' ? visibleTarget : HIDDEN_BOUNDS;
+  // crawlView only ever runs in X mode (twitter crawler). Hide in LinkedIn mode.
+  const crawlTarget = activePlatform === 'x' ? visibleTarget : HIDDEN_BOUNDS;
 
   if (twitterView && !twitterView.webContents.isDestroyed()) {
-    twitterView.setBounds(target);
-    // Force a paint in the newly exposed area. After a grow, Chromium can leave
-    // the freshly visible band black until the next input event — invalidate()
-    // schedules an immediate repaint so the user doesn't see a black stripe.
+    twitterView.setBounds(xTarget);
     try { twitterView.webContents.invalidate(); } catch {}
   }
+  if (linkedinView && !linkedinView.webContents.isDestroyed()) {
+    linkedinView.setBounds(liTarget);
+    try { linkedinView.webContents.invalidate(); } catch {}
+  }
   if (crawlView && !crawlView.webContents.isDestroyed()) {
-    crawlView.setBounds(target);
+    crawlView.setBounds(crawlTarget);
     try { crawlView.webContents.invalidate(); } catch {}
-    // Respect crawler state: don't yank crawlView out from under it during resize.
+  }
+
+  // Z-order: whichever BrowserView matches activePlatform is on top.
+  // Exception: while crawling in X mode, crawlView gets top to capture viewport
+  // focus for pagination triggers (see crawler.js).
+  if (activePlatform === 'x') {
     const top = crawler && crawler.state === 'crawling' ? crawlView : twitterView;
     if (top) win.setTopBrowserView(top);
+  } else if (linkedinView) {
+    win.setTopBrowserView(linkedinView);
+  }
+}
+
+function applyPlatform(platform) {
+  if (platform !== 'x' && platform !== 'linkedin') return;
+  activePlatform = platform;
+  if (settings) settings.set('activePlatform', platform);
+  resizeTwitterView();
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('platform-changed', { platform });
   }
 }
 

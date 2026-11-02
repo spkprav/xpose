@@ -77,6 +77,76 @@ function formatCount(n) {
 }
 
 // ═══════════════════════════════════════════════════
+// Global platform mode (X / LinkedIn)
+// Switches the BrowserView + sidebar tabs as a unit.
+// ═══════════════════════════════════════════════════
+window.activePlatform = 'x';
+
+function tabIsForPlatform(btn, platform) {
+  const list = (btn.dataset.platforms || 'x,linkedin').split(',').map(s => s.trim());
+  return list.includes(platform);
+}
+
+function applyPlatformUi(platform) {
+  if (platform !== 'x' && platform !== 'linkedin') return;
+  window.activePlatform = platform;
+
+  // Toggle header pills
+  $$('#platform-toggle .platform-pill').forEach(p => {
+    p.classList.toggle('active', p.dataset.platform === platform);
+    p.setAttribute('aria-selected', p.dataset.platform === platform ? 'true' : 'false');
+  });
+
+  // Hide tabs not applicable to active platform
+  const tabs = Array.from($$('.tab-btn'));
+  let activeTabStillVisible = false;
+  tabs.forEach(btn => {
+    const ok = tabIsForPlatform(btn, platform);
+    btn.classList.toggle('hidden', !ok);
+    if (ok && btn.classList.contains('active')) activeTabStillVisible = true;
+  });
+
+  // If current active tab got hidden, switch to first visible
+  if (!activeTabStillVisible) {
+    const firstVisible = tabs.find(b => !b.classList.contains('hidden'));
+    if (firstVisible) {
+      tabs.forEach(b => b.classList.remove('active'));
+      firstVisible.classList.add('active');
+      $$('.panel').forEach(p => p.classList.add('hidden'));
+      $(`#panel-${firstVisible.dataset.tab}`)?.classList.remove('hidden');
+    }
+  }
+
+  // Sync Prospects to current platform if it's loaded
+  if (typeof syncProspectsToPlatform === 'function') {
+    syncProspectsToPlatform(platform);
+  }
+
+  // Filter any element tagged data-platforms (workflow cards, toolbar buttons, etc.)
+  document.querySelectorAll('[data-platforms]').forEach(el => {
+    const list = (el.dataset.platforms || 'x,linkedin').split(',').map(s => s.trim());
+    el.classList.toggle('hidden', !list.includes(platform));
+  });
+}
+
+$$('#platform-toggle .platform-pill').forEach(pill => {
+  pill.addEventListener('click', () => {
+    const platform = pill.dataset.platform;
+    if (platform === window.activePlatform) return;
+    ipcRenderer.send('set-platform', { platform });
+    // Optimistic UI update — main will confirm with platform-changed.
+    applyPlatformUi(platform);
+  });
+});
+
+ipcRenderer.on('platform-changed', (_e, { platform }) => {
+  applyPlatformUi(platform);
+});
+
+// Ask main for the persisted platform on boot.
+ipcRenderer.send('get-platform');
+
+// ═══════════════════════════════════════════════════
 // Tab navigation
 // ═══════════════════════════════════════════════════
 $$('.tab-btn').forEach(btn => {
@@ -1715,3 +1785,610 @@ $('#wf-list-sweep-save')?.addEventListener('click', () => {
   loadWorkflowScheduleFromSettings();
   showGlobalStatus('Workflow saved', 1500);
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// PROSPECTS — Origami-style ICP search across X / LinkedIn
+// ═══════════════════════════════════════════════════════════════════════
+
+let activeProspectPlatform = window.activePlatform || 'x';
+let lastProspectSearchId = null;
+
+function syncProspectsToPlatform(platform) {
+  activeProspectPlatform = platform;
+  ipcRenderer.send('prospect-list-searches', { platform });
+  // Reset visible results — different platform = different result set.
+  const results = $('#prospect-results');
+  if (results) results.innerHTML = '<p class="text-xs text-x-text-secondary text-center mt-8 px-6 leading-relaxed">Platform switched. Type an ICP prompt above to search.</p>';
+  lastProspectSearchId = null;
+}
+
+document.querySelector('[data-tab="prospects"]')?.addEventListener('click', () => {
+  syncProspectsToPlatform(activeProspectPlatform);
+});
+
+$('#prospect-browse-btn')?.addEventListener('click', () => {
+  const platform = activeProspectPlatform;
+  const btn = $('#prospect-browse-btn');
+  const progress = $('#prospect-progress');
+  const results = $('#prospect-results');
+  if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
+  if (progress) { progress.classList.remove('hidden'); progress.textContent = `Loading all ${platform} prospects…`; }
+  if (results) results.innerHTML = '';
+  ipcRenderer.send('prospect-browse-all', { platform, limit: 300 });
+});
+
+$('#prospect-embed-score-btn')?.addEventListener('click', () => {
+  const platform = activeProspectPlatform;
+  if (platform !== 'linkedin') { alert('Embedding scoring only supports LinkedIn for now.'); return; }
+  const prompt = ($('#prospect-prompt')?.value || '').trim();
+  const btn = $('#prospect-embed-score-btn');
+  const progress = $('#prospect-progress');
+  const results = $('#prospect-results');
+  if (btn) { btn.disabled = true; btn.textContent = 'Embedding…'; }
+  if (progress) { progress.classList.remove('hidden'); progress.textContent = 'Embedding prospects + ICP via OpenRouter…'; }
+  if (results) results.innerHTML = '';
+  ipcRenderer.send('prospect-embed-and-score', { platform, prompt, embedFirst: true });
+});
+
+$('#prospect-enrich-all-btn')?.addEventListener('click', () => {
+  const platform = activeProspectPlatform;
+  if (platform !== 'linkedin') {
+    alert('Enrichment only supports LinkedIn for now.');
+    return;
+  }
+  const filter = prompt('Optional headline filter (substring, ILIKE). Blank = enrich all un-enriched. Example: "Operations"', '') || null;
+  const btn = $('#prospect-enrich-all-btn');
+  const progress = $('#prospect-progress');
+  const results = $('#prospect-results');
+  if (btn) { btn.disabled = true; btn.textContent = 'Enriching…'; }
+  if (progress) { progress.classList.remove('hidden'); progress.textContent = 'Fetching profiles via Apify…'; }
+  if (results) results.innerHTML = '';
+  ipcRenderer.send('prospect-enrich-all', { platform, headlineFilter: filter, limit: 2000 });
+});
+
+$('#prospect-score-all-btn')?.addEventListener('click', () => {
+  const platform = activeProspectPlatform;
+  const prompt = ($('#prospect-prompt')?.value || '').trim();
+  const btn = $('#prospect-score-all-btn');
+  const progress = $('#prospect-progress');
+  const results = $('#prospect-results');
+  if (btn) { btn.disabled = true; btn.textContent = 'Scoring…'; }
+  if (progress) { progress.classList.remove('hidden'); progress.textContent = 'Scoring every prospect. May take several minutes…'; }
+  if (results) results.innerHTML = '';
+  ipcRenderer.send('prospect-score-all', { platform, prompt });
+});
+
+$('#prospect-run-btn')?.addEventListener('click', () => {
+  const prompt = ($('#prospect-prompt')?.value || '').trim();
+  if (!prompt) { showGlobalStatus('Enter an ICP prompt first'); return; }
+  const candidateLimit = Number($('#prospect-candidate-limit')?.value) || 25;
+  const minScore       = Number($('#prospect-min-score')?.value);
+  const minFollowers   = Number($('#prospect-min-followers')?.value) || 0;
+
+  const btn = $('#prospect-run-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Searching…'; }
+  const progress = $('#prospect-progress');
+  if (progress) {
+    progress.classList.remove('hidden');
+    progress.textContent = 'Parsing ICP…';
+  }
+  const results = $('#prospect-results');
+  if (results) results.innerHTML = '';
+
+  ipcRenderer.send('prospect-search', {
+    platform: activeProspectPlatform,
+    prompt,
+    candidateLimit,
+    minScore: Number.isFinite(minScore) ? minScore : 40,
+    minFollowers,
+  });
+});
+
+ipcRenderer.on('prospect-search-progress', (_e, payload) => {
+  const progress = $('#prospect-progress');
+  if (!progress) return;
+  switch (payload.stage) {
+    case 'parsing':            progress.textContent = 'Parsing ICP prompt…'; break;
+    case 'parsed':             progress.textContent = `Criteria parsed: ${summarizeCriteria(payload.criteria)}`; break;
+    case 'candidates_loading': progress.textContent = 'Loading candidate pool…'; break;
+    case 'candidates_loaded':  progress.textContent = `${payload.count} candidates. Scoring…`; break;
+    case 'scoring':            progress.textContent = `Scoring ${payload.i + 1}/${payload.total}: @${payload.handle}`; break;
+    case 'score_error':        progress.textContent = `Score error on @${payload.handle}: ${payload.error}`; break;
+    case 'done':               progress.textContent = `Done. ${payload.saved} prospects above threshold.`; break;
+    case 'error':              progress.textContent = `Error: ${payload.error}`; break;
+  }
+});
+
+ipcRenderer.on('prospect-search-done', (_e, payload) => {
+  const btn = $('#prospect-run-btn');
+  if (btn) { btn.disabled = false; btn.textContent = 'Find prospects'; }
+  const scoreAllBtn = $('#prospect-score-all-btn');
+  if (scoreAllBtn) { scoreAllBtn.disabled = false; scoreAllBtn.textContent = 'Score all'; }
+  const enrichBtn = $('#prospect-enrich-all-btn');
+  if (enrichBtn) { enrichBtn.disabled = false; enrichBtn.textContent = 'Enrich all'; }
+  const embedBtn = $('#prospect-embed-score-btn');
+  if (embedBtn) { embedBtn.disabled = false; embedBtn.textContent = 'Embed score'; }
+  if (!payload.success) {
+    showGlobalStatus(`Search failed: ${payload.error}`, 4000);
+    return;
+  }
+  lastProspectSearchId = payload.searchId;
+  ipcRenderer.send('prospect-load-results', { searchId: payload.searchId });
+  ipcRenderer.send('prospect-list-searches', { platform: activeProspectPlatform });
+});
+
+function summarizeCriteria(c) {
+  if (!c) return '';
+  const parts = [];
+  if (c.roles?.length)      parts.push(`roles: ${c.roles.slice(0, 3).join(', ')}`);
+  if (c.industries?.length) parts.push(`industries: ${c.industries.slice(0, 3).join(', ')}`);
+  if (c.topics?.length)     parts.push(`topics: ${c.topics.slice(0, 3).join(', ')}`);
+  return parts.join(' | ') || 'generic';
+}
+
+ipcRenderer.on('prospect-searches-loaded', (_e, payload) => {
+  if (!payload.success) return;
+  const sel = $('#prospect-recent-select');
+  if (!sel) return;
+  const opts = ['<option value="">recent…</option>'];
+  for (const r of (payload.rows || [])) {
+    const label = (r.prompt || '').slice(0, 32).replace(/\n/g, ' ');
+    const count = r.result_count || 0;
+    opts.push(`<option value="${r.id}" title="${escapeHtml(r.prompt)}">${escapeHtml(label)} · ${count}</option>`);
+  }
+  sel.innerHTML = opts.join('');
+});
+
+$('#prospect-recent-select')?.addEventListener('change', (e) => {
+  const id = Number(e.target.value);
+  if (!id) return;
+  lastProspectSearchId = id;
+  ipcRenderer.send('prospect-load-results', { searchId: id });
+});
+
+ipcRenderer.on('prospect-results-loaded', (_e, payload) => {
+  const el = $('#prospect-results');
+  const browseBtn = $('#prospect-browse-btn');
+  const progress = $('#prospect-progress');
+  if (browseBtn) { browseBtn.disabled = false; browseBtn.textContent = 'Browse all'; }
+  if (!el) return;
+  if (!payload.success) {
+    el.innerHTML = `<p class="text-xs text-red-400 p-3">Error: ${escapeHtml(payload.error)}</p>`;
+    if (progress) progress.classList.add('hidden');
+    return;
+  }
+  if (!payload.rows?.length) {
+    el.innerHTML = payload.browse
+      ? '<p class="text-xs text-x-text-secondary text-center mt-8">No prospects in DB for this platform. Run the LinkedIn fill workflow first.</p>'
+      : '<p class="text-xs text-x-text-secondary text-center mt-8">No prospects above threshold. Try lowering min fit or broadening the prompt.</p>';
+    if (progress) progress.classList.add('hidden');
+    return;
+  }
+  if (progress) {
+    if (payload.browse) {
+      progress.classList.remove('hidden');
+      progress.textContent = `Showing ${payload.rows.length} prospects (most recent first, ones with title shown first).`;
+    } else {
+      progress.classList.add('hidden');
+    }
+  }
+  el.innerHTML = payload.rows.map(renderProspectCard).join('');
+  el.querySelectorAll('[data-outreach-prospect]').forEach(b => {
+    b.addEventListener('click', () => onOutreachClick(b));
+  });
+});
+
+function renderProspectCard(r) {
+  const meta = [
+    r.title && escapeHtml(r.title),
+    r.company && escapeHtml(r.company),
+    r.location && escapeHtml(r.location),
+  ].filter(Boolean).join(' · ');
+  const link = r.profile_url ? `<a href="${escapeHtml(r.profile_url)}" target="_blank" class="text-x-accent">@${escapeHtml(r.handle)}</a>` : `@${escapeHtml(r.handle)}`;
+  const bio = (r.bio || r.headline || '').slice(0, 240);
+  const channelOpts = r.platform === 'linkedin'
+    ? `<option value="connect">Connect note</option><option value="inmail">InMail</option>`
+    : `<option value="dm">DM</option><option value="reply">Reply</option>`;
+  return `
+    <div class="prospect-card" data-prospect-id="${r.prospect_id}" style="border:1px solid #2f3336;border-radius:8px;padding:10px 12px;background:#16181c">
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-2 text-sm font-medium">
+            <span>${escapeHtml(r.display_name || r.handle)}</span>
+            <span class="text-x-text-secondary text-xs">${link}</span>
+          </div>
+          ${meta ? `<div class="text-xs text-x-text-secondary mt-0.5">${meta}</div>` : ''}
+          ${bio ? `<div class="text-xs mt-1.5 leading-snug">${escapeHtml(bio)}</div>` : ''}
+          ${r.reason ? `<div class="text-xs text-x-text-secondary mt-1.5 italic">${escapeHtml(r.reason)}</div>` : ''}
+        </div>
+        <div class="text-right shrink-0">
+          <div style="font-size:20px;font-weight:600;color:${fitColor(r.fit_score)}">${r.fit_score == null ? '—' : r.fit_score}</div>
+          <div class="text-xs text-x-text-secondary">${r.fit_score == null ? 'unscored' : 'fit'}</div>
+          <div class="text-xs text-x-text-secondary mt-1">${(r.followers_count || 0).toLocaleString()} foll</div>
+        </div>
+      </div>
+      <div class="flex items-center gap-2 mt-2 pt-2 border-t border-x-border">
+        <select class="sb-textarea text-xs" data-channel-select style="padding:2px 6px;width:auto">
+          ${channelOpts}
+        </select>
+        <button class="sb-btn-ghost text-xs" data-outreach-prospect="${r.prospect_id}">Draft outreach</button>
+        <div class="outreach-output flex-1 text-xs text-x-text-secondary"></div>
+      </div>
+    </div>
+  `;
+}
+
+function fitColor(score) {
+  if (score >= 80) return '#10b981';
+  if (score >= 60) return '#3b82f6';
+  if (score >= 40) return '#f59e0b';
+  return '#9ca3af';
+}
+
+function onOutreachClick(btn) {
+  const card = btn.closest('.prospect-card');
+  if (!card) return;
+  const prospectId = Number(card.dataset.prospectId);
+  const channel = card.querySelector('[data-channel-select]')?.value || 'dm';
+  const out = card.querySelector('.outreach-output');
+
+  // Reconstruct minimal prospect payload from the DOM-rendered card.
+  // Bio + headline already in the card; the IPC handler also receives the
+  // canonical record via prospectId if it needs to enrich.
+  const prospect = {
+    handle: card.querySelector('a')?.textContent?.replace(/^@/, '') || '',
+    display_name: card.querySelector('.text-sm.font-medium span')?.textContent || '',
+    headline: '',
+    bio: card.querySelector('.text-xs.mt-1\\.5')?.textContent || '',
+  };
+
+  if (out) { out.textContent = 'Drafting…'; }
+  btn.disabled = true;
+
+  ipcRenderer.send('prospect-generate-outreach', {
+    prospectId,
+    searchId: lastProspectSearchId,
+    platform: activeProspectPlatform,
+    channel,
+    context: 'an indie builder',
+    prospect,
+  });
+}
+
+ipcRenderer.on('prospect-outreach-generated', (_e, payload) => {
+  // Find any card with a disabled outreach button to identify the target.
+  const btn = document.querySelector('.prospect-card [data-outreach-prospect]:disabled');
+  const card = btn?.closest('.prospect-card');
+  const out = card?.querySelector('.outreach-output');
+  if (btn) btn.disabled = false;
+  if (!payload.success) {
+    if (out) out.textContent = `Error: ${payload.error}`;
+    return;
+  }
+  if (out) {
+    out.innerHTML = `<div style="white-space:pre-wrap;color:#e5e7eb;background:#0f1419;padding:6px 8px;border-radius:4px;margin-top:6px">${escapeHtml(payload.body)}</div>`;
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Workflow: Fill LinkedIn Prospects
+// ═══════════════════════════════════════════════════════════════════════
+
+function liFillLog(line) {
+  const el = $('#wf-li-fill-log');
+  if (!el) return;
+  const stamp = new Date().toTimeString().slice(0, 8);
+  el.textContent += `[${stamp}] ${line}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+$('#wf-li-fill-run')?.addEventListener('click', () => {
+  const seedsRaw = ($('#wf-li-fill-seeds')?.value || '').trim();
+  const searchSeeds = seedsRaw ? seedsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const btn = $('#wf-li-fill-run');
+  const badge = $('#wf-li-fill-badge');
+  const statusEl = $('#wf-li-fill-status');
+  const resultEl = $('#wf-li-fill-result');
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
+  if (badge) { badge.textContent = 'running'; badge.style.background = '#f59e0b'; }
+  if (statusEl) statusEl.textContent = 'Sending run-workflow IPC…';
+  if (resultEl) resultEl.classList.add('hidden');
+  liFillLog(`click Run Now. seeds=${searchSeeds.join(',') || '(none)'}`);
+
+  ipcRenderer.send('run-workflow', { id: 'li-fill-prospects', opts: { searchSeeds } });
+});
+
+$('#wf-li-fill-clear-log')?.addEventListener('click', () => {
+  const el = $('#wf-li-fill-log');
+  if (el) el.textContent = '';
+});
+
+ipcRenderer.on('workflow-progress', (_e, ev) => {
+  if (ev.id !== 'li-fill-prospects') return;
+  const statusEl = $('#wf-li-fill-status');
+  const msg = ev.message || ev.phase || '';
+  if (statusEl && (ev.phase !== 'diagnostic' && ev.phase !== 'warn')) statusEl.textContent = msg;
+
+  if (ev.phase === 'scroll-tick' || ev.phase === 'scroll-stalled') {
+    liFillLog(msg);
+  } else if (ev.phase === 'diagnostic') {
+    liFillLog(`  ${msg}`);
+  } else if (ev.phase === 'dom-harvest') {
+    liFillLog(`  DOM ${msg}`);
+  } else if (ev.phase === 'dom-harvest-error') {
+    liFillLog(`  DOM ERROR ${ev.error}`);
+  } else if (ev.phase === 'snapshot') {
+    liFillLog(`  HTML ${msg}`);
+  } else if (ev.phase === 'warn') {
+    liFillLog(`  WARN ${msg}`);
+  } else if (ev.phase === 'error') {
+    liFillLog(`  ERROR ${ev.error || msg}`);
+  } else {
+    liFillLog(`${ev.phase}: ${msg}${ev.url ? ' → ' + ev.url : ''}${ev.seed ? ' (seed=' + ev.seed + ')' : ''}`);
+  }
+});
+
+// Surface live recon events in the workflow log when the LI card is visible.
+ipcRenderer.on('linkedin-recon-event', (_e, ev) => {
+  const card = document.querySelector('.workflow-card[data-workflow="li-fill-prospects"]');
+  if (!card || card.classList.contains('hidden')) return;
+  if (ev.kind === 'hit')               liFillLog(`hit ${ev.pattern} #${ev.hit_count}`);
+  else if (ev.kind === 'ingested')      liFillLog(`ingested ${ev.count} from ${ev.pattern} (cum=${ev.total_upserted})`);
+  else if (ev.kind === 'attached')      liFillLog('recon attached');
+  else if (ev.kind === 'detached')      liFillLog(`recon detached: ${ev.reason}`);
+  else if (ev.kind === 'autostore')     liFillLog(`autostore=${ev.enabled}`);
+  else if (ev.kind === 'ingest_error')  liFillLog(`ingest_error ${ev.pattern}: ${ev.error}`);
+});
+
+ipcRenderer.on('workflow-run-result', (_e, payload) => {
+  if (payload.id !== 'li-fill-prospects') return;
+  const btn = $('#wf-li-fill-run');
+  const badge = $('#wf-li-fill-badge');
+  const resultEl = $('#wf-li-fill-result');
+  if (btn) { btn.disabled = false; btn.textContent = 'Run Now'; }
+  if (badge) {
+    badge.textContent = payload.ok ? 'done' : 'error';
+    badge.style.background = payload.ok ? '#10b981' : '#ef4444';
+  }
+  if (resultEl) {
+    resultEl.classList.remove('hidden');
+    const stats = payload.stats || {};
+    const dur = payload.durationMs ? `${(payload.durationMs / 1000).toFixed(1)}s` : '';
+    resultEl.textContent = payload.ok
+      ? `+${payload.total || 0} prospects in ${dur}. feed:${stats.feed || 0} connections:${stats.connections || 0} mynetwork:${stats.mynetwork || 0} search:${stats.search || 0}`
+      : `Failed: ${payload.error}`;
+  }
+  liFillLog(payload.ok ? `result: +${payload.total || 0}` : `result FAIL: ${payload.error}`);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// X-fill-prospects workflow wiring (Workflows tab card)
+// ═══════════════════════════════════════════════════════════════════════
+
+function xFillLog(line) {
+  const el = $('#wf-x-fill-log');
+  if (!el) return;
+  const stamp = new Date().toTimeString().slice(0, 8);
+  el.textContent += `[${stamp}] ${line}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function readXFillOpts() {
+  const fetchWebsites = !!$('#wf-x-fill-web')?.checked;
+  const maxWebsiteFetches = Math.max(0, parseInt($('#wf-x-fill-web-cap')?.value || '50', 10));
+  const fetchTweets = $('#wf-x-fill-tweets') ? !!$('#wf-x-fill-tweets').checked : true;
+  const maxTweetCrawls = Math.max(0, parseInt($('#wf-x-fill-tweets-cap')?.value || '30', 10));
+  const embedAndScore = $('#wf-x-fill-embed') ? !!$('#wf-x-fill-embed').checked : true;
+  return { fetchWebsites, maxWebsiteFetches, fetchTweets, maxTweetCrawls, embedAndScore };
+}
+
+function startXFill({ skipDiscovery }) {
+  const seedsRaw = ($('#wf-x-fill-seeds')?.value || '').trim();
+  const searchSeeds = seedsRaw ? seedsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  if (!skipDiscovery && !searchSeeds.length) {
+    alert('At least one seed keyword is required (comma-separated). Or click "Enrich existing" to skip discovery.');
+    return;
+  }
+  const scrollsPerSeed = Math.max(1, parseInt($('#wf-x-fill-scrolls')?.value || '8', 10));
+  const opts = { searchSeeds, scrollsPerSeed, skipDiscovery, ...readXFillOpts() };
+
+  const runBtn = $('#wf-x-fill-run');
+  const enrichBtn = $('#wf-x-fill-enrich');
+  const badge = $('#wf-x-fill-badge');
+  const statusEl = $('#wf-x-fill-status');
+  const resultEl = $('#wf-x-fill-result');
+
+  if (runBtn)    { runBtn.disabled    = true; if (!skipDiscovery) runBtn.textContent    = 'Running…'; }
+  if (enrichBtn) { enrichBtn.disabled = true; if (skipDiscovery)  enrichBtn.textContent = 'Enriching…'; }
+  if (badge) { badge.textContent = skipDiscovery ? 'enriching' : 'running'; badge.style.background = '#f59e0b'; }
+  if (statusEl) statusEl.textContent = skipDiscovery ? 'Skip discovery, enrich existing X prospects…' : 'Sending run-workflow IPC…';
+  if (resultEl) resultEl.classList.add('hidden');
+  xFillLog(`click ${skipDiscovery ? 'Enrich existing' : 'Run Now'}. seeds=[${searchSeeds.join(',') || '(skip)'}] scrolls=${scrollsPerSeed} web=${opts.fetchWebsites} tweets=${opts.fetchTweets} embed=${opts.embedAndScore}`);
+
+  ipcRenderer.send('run-workflow', { id: 'x-fill-prospects', opts });
+}
+
+$('#wf-x-fill-run')?.addEventListener('click', () => startXFill({ skipDiscovery: false }));
+$('#wf-x-fill-enrich')?.addEventListener('click', () => startXFill({ skipDiscovery: true }));
+
+$('#wf-x-fill-clear-log')?.addEventListener('click', () => {
+  const el = $('#wf-x-fill-log');
+  if (el) el.textContent = '';
+});
+
+ipcRenderer.on('workflow-progress', (_e, ev) => {
+  if (ev.id !== 'x-fill-prospects') return;
+  const statusEl = $('#wf-x-fill-status');
+  const msg = ev.message || ev.phase || '';
+  if (statusEl) statusEl.textContent = msg;
+  xFillLog(`${ev.phase}: ${msg}`);
+});
+
+ipcRenderer.on('workflow-run-result', (_e, payload) => {
+  if (payload.id !== 'x-fill-prospects') return;
+  const btn = $('#wf-x-fill-run');
+  const enrichBtn = $('#wf-x-fill-enrich');
+  const badge = $('#wf-x-fill-badge');
+  const resultEl = $('#wf-x-fill-result');
+  if (btn)       { btn.disabled       = false; btn.textContent       = 'Run Now (full)'; }
+  if (enrichBtn) { enrichBtn.disabled = false; enrichBtn.textContent = 'Enrich existing'; }
+  if (badge) {
+    badge.textContent = payload.ok ? 'done' : 'error';
+    badge.style.background = payload.ok ? '#10b981' : '#ef4444';
+  }
+  if (resultEl) {
+    resultEl.classList.remove('hidden');
+    const stats = payload.stats || {};
+    const dur = payload.durationMs ? `${(payload.durationMs / 1000).toFixed(1)}s` : '';
+    const mode = stats.mode || 'full';
+    resultEl.textContent = payload.ok
+      ? `[${mode}] +${stats.upserted || 0} new · web ${stats.webFetched || 0} · tweets ${stats.tweetsCrawled || 0} (skipped-cached ${stats.tweetsSkippedCached || 0}) · embedded ${stats.embedded || 0} · scored ${stats.scored || 0} · ${dur}`
+      : `Failed: ${payload.error}`;
+  }
+  xFillLog(payload.ok ? `DONE [${(payload.stats || {}).mode || 'full'}] +${(payload.stats || {}).upserted || 0} prospects, scored ${(payload.stats || {}).scored || 0}. Open Prospects tab → Top 10 today.` : `result FAIL: ${payload.error}`);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// X-only Prospects toolbar buttons: Embed score (X) + Top 10 today
+// ═══════════════════════════════════════════════════════════════════════
+
+$('#prospect-x-embed-score-btn')?.addEventListener('click', () => {
+  const prompt = ($('#prospect-prompt')?.value || '').trim();
+  const btn = $('#prospect-x-embed-score-btn');
+  const progress = $('#prospect-progress');
+  if (btn) { btn.disabled = true; btn.textContent = 'Embedding…'; }
+  if (progress) {
+    progress.classList.remove('hidden');
+    progress.textContent = 'Embedding X prospects (bio + tweets + website), then ranking vs ICP…';
+  }
+  ipcRenderer.send('prospect-x-embed-and-score', { prompt, embedFirst: true, excludeContacted: true });
+});
+
+$('#prospect-x-daily-ten-btn')?.addEventListener('click', () => {
+  const btn = $('#prospect-x-daily-ten-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
+  ipcRenderer.send('prospect-x-daily-ten', { limit: 10 });
+});
+
+// Re-enable X buttons on result + progress events.
+ipcRenderer.on('prospect-search-progress', (_e, ev) => {
+  if (!ev || !String(ev.stage || '').startsWith('x_embed_')) return;
+  const progress = $('#prospect-progress');
+  if (progress) {
+    progress.classList.remove('hidden');
+    if (ev.stage === 'x_embed_start')     progress.textContent = `Embedding ${ev.total || 0} X prospects…`;
+    else if (ev.stage === 'x_embed_embedded') progress.textContent = `Embedded @${ev.handle} (${ev.doneSoFar}/${ev.total})`;
+    else if (ev.stage === 'x_embed_scored')   progress.textContent = `Scored ${ev.count || 0} prospects vs ICP. Loading results…`;
+    else if (ev.stage === 'x_embed_done')     progress.textContent = `Done. embedded=${ev.embedded || 0} failed=${ev.failed || 0}`;
+  }
+});
+
+ipcRenderer.on('prospect-search-done', (_e, ev) => {
+  const xBtn = $('#prospect-x-embed-score-btn');
+  if (xBtn && xBtn.disabled) { xBtn.disabled = false; xBtn.textContent = 'Embed score (X)'; }
+  const tenBtn = $('#prospect-x-daily-ten-btn');
+  if (tenBtn && tenBtn.disabled) { tenBtn.disabled = false; tenBtn.textContent = 'Top 10 today'; }
+});
+
+ipcRenderer.on('prospect-results-loaded', (_e, payload) => {
+  if (!payload?.dailyTen) return;
+  const tenBtn = $('#prospect-x-daily-ten-btn');
+  if (tenBtn) { tenBtn.disabled = false; tenBtn.textContent = 'Top 10 today'; }
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Identity defaults: hydrate Settings inputs + pre-fill empty fields
+// across Prospects + Workflow when defaults exist in user-local settings.
+// All values live in user-local settings.json — repo carries empty schema only.
+// ═══════════════════════════════════════════════════════════════════════
+
+let identityDefaultsCache = null;
+
+function applyIdentityDefaults(data) {
+  identityDefaultsCache = data;
+  const oc = data.outreachContext || {};
+  const ocX  = typeof oc === 'string' ? oc : (oc.x  || '');
+  const ocLi = typeof oc === 'string' ? oc : (oc.linkedin || '');
+
+  // Hydrate Settings panel fields (always reflect saved state)
+  if ($('#id-outreach-context-x'))  $('#id-outreach-context-x').value  = ocX;
+  if ($('#id-outreach-context-li')) $('#id-outreach-context-li').value = ocLi;
+  if ($('#id-icp-x'))                $('#id-icp-x').value               = data.icp?.x || '';
+  if ($('#id-icp-li'))               $('#id-icp-li').value              = data.icp?.linkedin || '';
+  if ($('#id-li-seeds'))             $('#id-li-seeds').value            = (data.liSearchSeeds || []).join(', ');
+  if ($('#id-x-seeds'))              $('#id-x-seeds').value             = (data.xSearchSeeds  || []).join(', ');
+
+  // Pre-fill Prospects prompt textarea only if empty (don't overwrite user typing)
+  const promptEl = $('#prospect-prompt');
+  if (promptEl && !promptEl.value) {
+    const platform = window.activePlatform || 'x';
+    promptEl.value = data.icp?.[platform] || '';
+  }
+
+  // Pre-fill LinkedIn workflow seeds input only if empty
+  const seedsEl = $('#wf-li-fill-seeds');
+  if (seedsEl && !seedsEl.value && data.liSearchSeeds?.length) {
+    seedsEl.value = data.liSearchSeeds.join(', ');
+  }
+  // Same for X workflow card.
+  const xSeedsEl = $('#wf-x-fill-seeds');
+  if (xSeedsEl && !xSeedsEl.value && data.xSearchSeeds?.length) {
+    xSeedsEl.value = data.xSearchSeeds.join(', ');
+  }
+}
+
+ipcRenderer.on('identity-defaults', (_e, data) => applyIdentityDefaults(data));
+ipcRenderer.send('get-identity-defaults');
+
+// When the user switches platforms, swap the Prospects prompt default to the
+// new platform's ICP. Preserve user-typed input by only swapping if the current
+// prompt matches one of the cached ICP defaults (i.e. wasn't custom-edited).
+(function bindProspectsPromptToPlatform() {
+  const original = window.applyPlatformUi;
+  if (typeof original !== 'function') return;
+  window.applyPlatformUi = function(platform) {
+    original(platform);
+    const promptEl = $('#prospect-prompt');
+    if (!promptEl || !identityDefaultsCache) return;
+    const icp = identityDefaultsCache.icp || {};
+    const current = promptEl.value.trim();
+    const isDefault = !current || current === (icp.x || '').trim() || current === (icp.linkedin || '').trim();
+    if (isDefault) promptEl.value = icp[platform] || '';
+  };
+})();
+
+$('#btn-save-identity')?.addEventListener('click', () => {
+  const seedsRaw = ($('#id-li-seeds')?.value || '').trim();
+  const li_search_seeds = seedsRaw ? seedsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const xSeedsRaw = ($('#id-x-seeds')?.value || '').trim();
+  const x_search_seeds = xSeedsRaw ? xSeedsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const payload = {
+    outreach_context: {
+      x:        ($('#id-outreach-context-x')?.value  || '').trim(),
+      linkedin: ($('#id-outreach-context-li')?.value || '').trim(),
+    },
+    icp: {
+      x:        ($('#id-icp-x')?.value || '').trim(),
+      linkedin: ($('#id-icp-li')?.value || '').trim(),
+    },
+    li_search_seeds,
+    x_search_seeds,
+  };
+  const status = $('#id-save-status');
+  if (status) status.textContent = 'Saving…';
+  ipcRenderer.send('save-identity', payload);
+});
+
+ipcRenderer.on('identity-saved', (_e, payload) => {
+  const status = $('#id-save-status');
+  if (!status) return;
+  status.textContent = payload.ok ? 'Saved.' : `Save failed: ${payload.error}`;
+  setTimeout(() => { status.textContent = ''; }, 2000);
+  // Re-fetch to refresh cache + re-apply to other panels.
+  ipcRenderer.send('get-identity-defaults');
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// (Manual snapshot + cleanup UI removed — backend IPC handlers in main.js stay idle.)
+// ═══════════════════════════════════════════════════════════════════════

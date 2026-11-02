@@ -25,6 +25,39 @@
   opacity: 0.5;
 }
 
+/* Platform mode toggle (X / LinkedIn) — replaces the xPose wordmark */
+.platform-toggle {
+  display: inline-flex;
+  background: #0f1419;
+  border: 1px solid #2f3336;
+  border-radius: 999px;
+  padding: 2px;
+  gap: 2px;
+}
+.platform-pill {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #71767b;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 4px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.platform-pill:hover {
+  color: #e7e9ea;
+}
+.platform-pill.active {
+  background: #1d9bf0;
+  color: #ffffff;
+}
+.platform-pill[data-platform="linkedin"].active {
+  background: #0a66c2;
+}
+
 .sb-header-actions {
   display: flex;
   align-items: center;

@@ -479,3 +479,132 @@ WHERE in_reply_to_screen_name IS NOT NULL
 GROUP BY in_reply_to_screen_name
 HAVING COUNT(*) >= 3
 ORDER BY interaction_count DESC;
+
+-- ============================================================================
+-- PROSPECTS (Origami-style prompt → fit-scored leads)
+-- ============================================================================
+-- platform-namespaced so X and LinkedIn share schema, isolated by `platform`.
+
+CREATE TABLE IF NOT EXISTS prospects (
+    id              SERIAL PRIMARY KEY,
+    platform        VARCHAR(20) NOT NULL,            -- 'x' | 'linkedin'
+    handle          VARCHAR(120) NOT NULL,           -- @screen_name for X, vanity url slug for LinkedIn
+    profile_url     TEXT,
+    display_name    VARCHAR(200),
+    headline        TEXT,                            -- LinkedIn headline / X bio first line
+    bio             TEXT,
+    location        VARCHAR(200),
+    followers_count INT  DEFAULT 0,                  -- X followers / LinkedIn connection count
+    following_count INT  DEFAULT 0,
+    company         VARCHAR(200),                    -- LinkedIn current company (nullable for X)
+    title           VARCHAR(200),                    -- LinkedIn role title
+    raw_data        JSONB,
+    -- Apify enrichment columns (filled by lib/linkedin/enrich-apify.js)
+    summary             TEXT,                        -- LinkedIn `summary` (long-form about)
+    connections_count   INT,                         -- LinkedIn 1st-degree count
+    country_code        VARCHAR(8),
+    picture_url         TEXT,
+    is_premium          BOOLEAN DEFAULT FALSE,
+    is_verified         BOOLEAN DEFAULT FALSE,
+    is_creator          BOOLEAN DEFAULT FALSE,
+    is_influencer       BOOLEAN DEFAULT FALSE,
+    positions           JSONB,                       -- work history
+    educations          JSONB,                       -- schools
+    skills              JSONB,                       -- skill names + endorsements
+    certifications      JSONB,
+    mutual_connections  JSONB,                       -- mutuals when scraping own connections
+    apify_raw           JSONB,                       -- full payload for future re-parsing
+    enriched_at         TIMESTAMP,
+    enriched_source     VARCHAR(40),                 -- e.g. 'apify-supreme_coder'
+    -- Embeddings (require: CREATE EXTENSION IF NOT EXISTS vector;)
+    embedding           vector(1536),                -- legacy LinkedIn-flow vector
+    embedded_at         TIMESTAMP,
+    embedding_model     VARCHAR(80),
+    -- X-flow per-source vectors (bio / recent tweets / website)
+    embedding_bio       vector(1536),
+    embedding_tweets    vector(1536),
+    embedding_web       vector(1536),
+    embedded_bio_at     TIMESTAMP,
+    embedded_tweets_at  TIMESTAMP,
+    embedded_web_at     TIMESTAMP,
+    -- Website blurb cached for embedding
+    website_url         TEXT,
+    website_text        TEXT,                        -- stripped concat of home/about/pricing, cap ~16KB
+    website_fetched_at  TIMESTAMP,
+    first_seen_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (platform, handle)
+);
+
+-- Idempotent ALTERs for existing installs (CREATE TABLE IF NOT EXISTS skips above on existing DBs)
+ALTER TABLE prospects ADD COLUMN IF NOT EXISTS embedding           vector(1536);
+ALTER TABLE prospects ADD COLUMN IF NOT EXISTS embedded_at         TIMESTAMP;
+ALTER TABLE prospects ADD COLUMN IF NOT EXISTS embedding_model     VARCHAR(80);
+ALTER TABLE prospects ADD COLUMN IF NOT EXISTS embedding_bio       vector(1536);
+ALTER TABLE prospects ADD COLUMN IF NOT EXISTS embedding_tweets    vector(1536);
+ALTER TABLE prospects ADD COLUMN IF NOT EXISTS embedding_web       vector(1536);
+ALTER TABLE prospects ADD COLUMN IF NOT EXISTS embedded_bio_at     TIMESTAMP;
+ALTER TABLE prospects ADD COLUMN IF NOT EXISTS embedded_tweets_at  TIMESTAMP;
+ALTER TABLE prospects ADD COLUMN IF NOT EXISTS embedded_web_at     TIMESTAMP;
+ALTER TABLE prospects ADD COLUMN IF NOT EXISTS website_url         TEXT;
+ALTER TABLE prospects ADD COLUMN IF NOT EXISTS website_text        TEXT;
+ALTER TABLE prospects ADD COLUMN IF NOT EXISTS website_fetched_at  TIMESTAMP;
+
+CREATE INDEX IF NOT EXISTS idx_prospects_platform ON prospects(platform);
+CREATE INDEX IF NOT EXISTS idx_prospects_handle ON prospects(platform, handle);
+CREATE INDEX IF NOT EXISTS idx_prospects_company ON prospects(company) WHERE company IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_prospects_enriched_at ON prospects(enriched_at);
+CREATE INDEX IF NOT EXISTS idx_prospects_country_code ON prospects(country_code) WHERE country_code IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_prospects_embedded_at ON prospects(embedded_at);
+CREATE INDEX IF NOT EXISTS idx_prospects_embedding         ON prospects USING hnsw (embedding         vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_prospects_embedding_bio     ON prospects USING hnsw (embedding_bio     vector_cosine_ops) WHERE embedding_bio    IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_prospects_embedding_tweets  ON prospects USING hnsw (embedding_tweets  vector_cosine_ops) WHERE embedding_tweets IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_prospects_embedding_web     ON prospects USING hnsw (embedding_web     vector_cosine_ops) WHERE embedding_web    IS NOT NULL;
+
+-- A saved ICP search: natural-language prompt + parsed criteria.
+CREATE TABLE IF NOT EXISTS prospect_searches (
+    id           SERIAL PRIMARY KEY,
+    platform     VARCHAR(20) NOT NULL,               -- 'x' | 'linkedin'
+    prompt       TEXT NOT NULL,                      -- raw user ICP prompt
+    criteria     JSONB,                              -- LLM-parsed structured criteria
+    result_count INT DEFAULT 0,
+    status       VARCHAR(20) DEFAULT 'pending',      -- pending/running/done/failed
+    error_message TEXT,
+    created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_prospect_searches_platform ON prospect_searches(platform, created_at DESC);
+
+-- Many-to-many: search × prospect, with per-row fit-score + reasoning.
+CREATE TABLE IF NOT EXISTS prospect_search_results (
+    id           SERIAL PRIMARY KEY,
+    search_id    INT NOT NULL REFERENCES prospect_searches(id) ON DELETE CASCADE,
+    prospect_id  INT NOT NULL REFERENCES prospects(id) ON DELETE CASCADE,
+    fit_score    INT NOT NULL,                       -- 0-100
+    score_breakdown JSONB,                           -- per-criterion sub-scores
+    reason       TEXT,                               -- LLM rationale
+    signals      JSONB,                              -- buying/hiring/funding signal flags
+    scored_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (search_id, prospect_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_prospect_results_search ON prospect_search_results(search_id, fit_score DESC);
+CREATE INDEX IF NOT EXISTS idx_prospect_results_prospect ON prospect_search_results(prospect_id);
+
+-- Outreach drafts per prospect per platform (separate from `drafts` which is for own posts).
+CREATE TABLE IF NOT EXISTS outreach_drafts (
+    id           SERIAL PRIMARY KEY,
+    prospect_id  INT NOT NULL REFERENCES prospects(id) ON DELETE CASCADE,
+    search_id    INT REFERENCES prospect_searches(id) ON DELETE SET NULL,
+    platform     VARCHAR(20) NOT NULL,               -- 'x' | 'linkedin'
+    channel      VARCHAR(20) NOT NULL,               -- 'dm' | 'reply' | 'connect' | 'inmail' | 'email'
+    body         TEXT NOT NULL,
+    status       VARCHAR(20) DEFAULT 'draft',        -- draft/approved/sent/discarded
+    sent_at      TIMESTAMP,
+    model        TEXT,
+    created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_outreach_drafts_prospect ON outreach_drafts(prospect_id);
+CREATE INDEX IF NOT EXISTS idx_outreach_drafts_status ON outreach_drafts(status, created_at DESC);

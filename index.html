@@ -29,9 +29,12 @@
 
   <div id="sidebar" class="fixed top-0 right-0 h-full bg-x-surface border-l border-x-border flex flex-col" style="width:320px">
 
-    <!-- ── Header ─────────────────────────────────────────── -->
+    <!-- ── Header: platform mode toggle ──────────────────── -->
     <header class="sb-header">
-      <span class="sb-wordmark">xPose</span>
+      <div id="platform-toggle" class="platform-toggle" role="tablist" aria-label="Platform mode">
+        <button class="platform-pill active" data-platform="x"        role="tab" aria-selected="true">X</button>
+        <button class="platform-pill"        data-platform="linkedin" role="tab" aria-selected="false">LinkedIn</button>
+      </div>
       <div class="sb-header-actions">
         <button id="btn-reload" class="sb-icon-btn" title="Reload page">
           <i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i>
@@ -47,13 +50,14 @@
 
     <!-- ── Tab strip ──────────────────────────────────────── -->
     <nav class="sb-tabs">
-      <button data-tab="circle"    class="tab-btn active">Circle</button>
-      <button data-tab="crawl"     class="tab-btn">Crawl</button>
-      <button data-tab="lists"     class="tab-btn">Lists</button>
-      <button data-tab="reply"     class="tab-btn">Reply</button>
-      <button data-tab="drafts"    class="tab-btn">Drafts</button>
-      <button data-tab="workflows" class="tab-btn">Workflows</button>
-      <button data-tab="settings"  class="tab-btn">Settings</button>
+      <button data-tab="circle"    data-platforms="x"          class="tab-btn active">Circle</button>
+      <button data-tab="crawl"     data-platforms="x"          class="tab-btn">Crawl</button>
+      <button data-tab="lists"     data-platforms="x"          class="tab-btn">Lists</button>
+      <button data-tab="reply"     data-platforms="x"          class="tab-btn">Reply</button>
+      <button data-tab="drafts"    data-platforms="x,linkedin" class="tab-btn">Drafts</button>
+      <button data-tab="workflows" data-platforms="x,linkedin" class="tab-btn">Workflows</button>
+      <button data-tab="prospects" data-platforms="x,linkedin" class="tab-btn">Prospects</button>
+      <button data-tab="settings"  data-platforms="x,linkedin" class="tab-btn">Settings</button>
     </nav>
 
     <!-- ── Global status line (ephemeral messages) ─────────── -->
@@ -402,8 +406,8 @@
         <span class="text-xs text-x-text-secondary flex-1">Composite jobs chained from list crawl → LLM scoring → Telegram push.</span>
       </div>
       <div id="workflows-list" class="flex-1 overflow-y-auto p-3 space-y-3">
-        <!-- Workflow card: list-sweep -->
-        <div class="workflow-card" data-workflow="list-sweep" style="border:1px solid #2f3336;border-radius:8px;padding:12px;background:#16181c">
+        <!-- Workflow card: list-sweep (X-only) -->
+        <div class="workflow-card" data-workflow="list-sweep" data-platforms="x" style="border:1px solid #2f3336;border-radius:8px;padding:12px;background:#16181c">
           <div class="flex items-center justify-between mb-1.5">
             <div class="text-sm font-medium">List Sweep &amp; Notify</div>
             <span id="wf-list-sweep-badge" class="text-xs px-2 py-0.5 rounded" style="background:#1d4ed8;color:white">idle</span>
@@ -445,6 +449,153 @@
             <button id="wf-list-sweep-save" class="w-full py-1.5 px-3 mt-1 text-xs border border-x-border rounded hover:bg-x-border transition-colors">Save schedule</button>
           </div>
         </div>
+
+        <!-- Workflow card: li-fill-prospects (LinkedIn-only) -->
+        <div class="workflow-card" data-workflow="li-fill-prospects" data-platforms="linkedin" style="border:1px solid #2f3336;border-radius:8px;padding:12px;background:#16181c">
+          <div class="flex items-center justify-between mb-1.5">
+            <div class="text-sm font-medium">Fill LinkedIn Prospects</div>
+            <span id="wf-li-fill-badge" class="text-xs px-2 py-0.5 rounded" style="background:#0a66c2;color:white">idle</span>
+          </div>
+          <p class="text-xs text-x-text-secondary mb-2 leading-snug">
+            Drives LinkedIn browser through 4 phases:<br>
+            1. <b>Home feed</b> (densest, no rate limit) — scroll feed, capture every post's author<br>
+            2. <b>Connections</b> — your 1st-degree network<br>
+            3. <b>My Network</b> — "people you may know" cards<br>
+            4. <b>Optional search seeds</b> — People SRP per term (hits commercial-use cap on free accounts)<br>
+            Every captured Profile auto-upserts into <code>prospects</code> (platform=linkedin).
+          </p>
+          <div class="text-xs text-x-text-secondary mb-2">
+            <span id="wf-li-fill-status" style="font-style:italic">Not yet run.</span>
+          </div>
+          <div class="text-xs text-x-text-secondary mb-3 hidden" id="wf-li-fill-result"></div>
+          <div class="flex items-center gap-2 flex-wrap">
+            <button id="wf-li-fill-run" class="sb-btn-primary">Run Now</button>
+            <span class="text-xs text-x-text-secondary">Make sure you are logged in on the LinkedIn view first.</span>
+          </div>
+          <div class="mt-3 pt-3 border-t border-x-border text-xs space-y-1.5">
+            <div class="text-x-text-secondary mb-1">Optional: people-search seeds (comma-separated)</div>
+            <input id="wf-li-fill-seeds" type="text" placeholder="founder, head of growth, ML engineer"
+              class="sb-textarea font-mono text-xs w-full" />
+            <p class="text-x-text-secondary leading-snug">Empty = skip search phase. Each seed runs a People SRP + scrolls.</p>
+          </div>
+          <div class="mt-3 pt-3 border-t border-x-border text-xs">
+            <div class="text-x-text-secondary mb-1 flex items-center justify-between">
+              <span>Live log</span>
+              <button id="wf-li-fill-clear-log" class="sb-action-link text-xs">clear</button>
+            </div>
+            <pre id="wf-li-fill-log" style="max-height:160px;overflow-y:auto;background:#0f1419;padding:6px 8px;border-radius:4px;font-size:10px;line-height:1.4;color:#9ca3af;white-space:pre-wrap;word-break:break-all"></pre>
+          </div>
+        </div>
+
+        <!-- Workflow card: x-fill-prospects (X-only) -->
+        <div class="workflow-card" data-workflow="x-fill-prospects" data-platforms="x" style="border:1px solid #2f3336;border-radius:8px;padding:12px;background:#16181c">
+          <div class="flex items-center justify-between mb-1.5">
+            <div class="text-sm font-medium">Fill X Prospects (people-search)</div>
+            <span id="wf-x-fill-badge" class="text-xs px-2 py-0.5 rounded" style="background:#1d4ed8;color:white">idle</span>
+          </div>
+          <p class="text-xs text-x-text-secondary mb-2 leading-snug">
+            One-click pipeline. Discovers prospects, enriches them, scores against your ICP. Phases (in order):
+          </p>
+          <ol class="text-xs text-x-text-secondary mb-2 leading-snug list-decimal pl-5 space-y-0.5">
+            <li><b>Discover</b>: drives the hidden crawl view through <code>x.com/search?q=&lt;seed&gt;&amp;f=user</code> for each seed. Auto-upserts every <code>TimelineUser</code> into <code>prospects(platform=x)</code>.</li>
+            <li><b>Web fetch</b>: home + /about + /pricing per prospect with a website (skip 0-follower accounts).</li>
+            <li><b>Tweets</b>: nav <code>/&lt;handle&gt;/with_replies</code> per prospect, save recent tweets to <code>circle_tweets</code>.</li>
+            <li><b>Embed + score</b>: 3 vectors per prospect (bio, tweets, web) vs <code>identity.icp.x</code>. Results land in <b>Prospects</b> tab automatically.</li>
+          </ol>
+          <p class="text-xs text-x-text-secondary mb-2 leading-snug">
+            After run completes, switch to <b>Prospects</b> tab (X mode) → click <b>Top 10 today</b> for the daily DM list.
+          </p>
+          <div class="text-xs text-x-text-secondary mb-2">
+            <span id="wf-x-fill-status" style="font-style:italic">Not yet run.</span>
+          </div>
+          <div class="text-xs text-x-text-secondary mb-3 hidden" id="wf-x-fill-result"></div>
+          <div class="flex items-center gap-2 flex-wrap">
+            <button id="wf-x-fill-run" class="sb-btn-primary" title="Full pipeline: discover via search seeds, then web, tweets, embed+score">Run Now (full)</button>
+            <button id="wf-x-fill-enrich" class="sb-btn-ghost" title="Skip discovery. Run web + tweets + embed+score over prospects already in DB. Idempotent: skips ones with cached data.">Enrich existing</button>
+            <span class="text-xs text-x-text-secondary">Make sure you are logged in on X first (cookies shared with crawl view).</span>
+          </div>
+          <div class="mt-3 pt-3 border-t border-x-border text-xs space-y-1.5">
+            <div class="text-x-text-secondary mb-1">People-search seeds (comma-separated, required)</div>
+            <input id="wf-x-fill-seeds" type="text" placeholder="indie ecom founder, shopify operator, dtc brand owner"
+              class="sb-textarea font-mono text-xs w-full" />
+            <div class="flex items-center gap-2 flex-wrap mt-1">
+              <label class="text-x-text-secondary w-32 shrink-0">scrolls per seed</label>
+              <input id="wf-x-fill-scrolls" type="number" min="1" max="40" value="8" class="sb-textarea font-mono text-xs" style="width:60px" />
+              <label class="flex items-center gap-1 ml-2"><input type="checkbox" id="wf-x-fill-web" checked /> fetch websites after</label>
+              <label class="text-x-text-secondary">cap</label>
+              <input id="wf-x-fill-web-cap" type="number" min="0" max="500" value="50" class="sb-textarea font-mono text-xs" style="width:60px" title="Max website fetches per run" />
+            </div>
+            <div class="flex items-center gap-2 flex-wrap mt-1">
+              <label class="flex items-center gap-1"><input type="checkbox" id="wf-x-fill-tweets" checked /> fetch tweets after</label>
+              <label class="text-x-text-secondary">cap</label>
+              <input id="wf-x-fill-tweets-cap" type="number" min="0" max="500" value="30" class="sb-textarea font-mono text-xs" style="width:60px" title="Max tweet pulls per run (each ~6s)" />
+              <label class="flex items-center gap-1 ml-3"><input type="checkbox" id="wf-x-fill-embed" checked /> embed + score after</label>
+              <span class="text-x-text-secondary" style="font-style:italic">scores vs identity.icp.x; results auto-populate Prospects tab</span>
+            </div>
+          </div>
+          <div class="mt-3 pt-3 border-t border-x-border text-xs">
+            <div class="text-x-text-secondary mb-1 flex items-center justify-between">
+              <span>Live log</span>
+              <button id="wf-x-fill-clear-log" class="sb-action-link text-xs">clear</button>
+            </div>
+            <pre id="wf-x-fill-log" style="max-height:160px;overflow-y:auto;background:#0f1419;padding:6px 8px;border-radius:4px;font-size:10px;line-height:1.4;color:#9ca3af;white-space:pre-wrap;word-break:break-all"></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════
+         PROSPECTS PANEL (Origami-style ICP search)
+    ════════════════════════════════════════════════════════ -->
+    <div id="panel-prospects" class="panel flex-1 flex flex-col overflow-hidden hidden">
+
+      <!-- Compact search bar. Platform comes from global toggle in header. -->
+      <div class="sb-toolbar" style="flex-direction:column;align-items:stretch;gap:6px;padding:8px 12px">
+        <textarea id="prospect-prompt" rows="2"
+          placeholder="Describe ICP. e.g. B2B SaaS founders in India, dev-tools, active on X about AI agents"
+          class="sb-textarea text-xs"></textarea>
+
+        <!-- Row 1: shared controls (work on either platform). Reads activeProspectPlatform under the hood. -->
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <input id="prospect-candidate-limit" type="number" min="5" max="100" value="25" title="candidates"
+            class="sb-textarea font-mono text-xs" style="width:48px;padding:2px 4px" />
+          <input id="prospect-min-score" type="number" min="0" max="100" value="40" title="min fit"
+            class="sb-textarea font-mono text-xs" style="width:42px;padding:2px 4px" />
+          <input id="prospect-min-followers" type="number" min="0" value="0" title="min followers"
+            class="sb-textarea font-mono text-xs" style="width:54px;padding:2px 4px" />
+          <select id="prospect-recent-select" class="sb-textarea text-xs" style="padding:2px 4px;max-width:160px;flex:1;min-width:80px" title="Recent searches">
+            <option value="">recent…</option>
+          </select>
+          <button id="prospect-browse-btn" class="sb-btn-ghost" style="margin-left:auto;padding:4px 10px;font-size:12px" title="Show all prospects for the active platform">Browse all</button>
+          <button id="prospect-score-all-btn" class="sb-btn-ghost" style="padding:4px 10px;font-size:12px" title="LLM-score every prospect for the active platform vs ICP. Slow.">Score all (LLM)</button>
+          <button id="prospect-run-btn" class="sb-btn-primary" style="padding:4px 10px;font-size:12px" title="Parse ICP + LLM-score candidate set">Find</button>
+        </div>
+
+        <!-- Row 2: X-only tools. Auto-hidden when platform=linkedin via data-platforms filter. -->
+        <div data-platforms="x" class="flex items-center gap-1.5 flex-wrap" style="padding:4px 0;border-top:1px dashed #2f3336;margin-top:2px">
+          <span class="text-xs px-1.5 py-0.5 rounded font-mono" style="background:#1d4ed8;color:white">X</span>
+          <button id="prospect-x-embed-score-btn" class="sb-btn-ghost" style="padding:4px 10px;font-size:12px" title="Embed each X prospect's bio + recent tweets + website separately, rank by weighted cosine vs ICP. Excludes already-contacted.">Embed score</button>
+          <button id="prospect-x-daily-ten-btn" class="sb-btn-ghost" style="padding:4px 10px;font-size:12px" title="Top 10 from latest X score, filtering anyone with a sent outreach draft. Daily DM list.">Top 10 today</button>
+          <span class="text-xs text-x-text-secondary ml-auto" style="font-style:italic">Fill prospects via Workflows → Fill X Prospects</span>
+        </div>
+
+        <!-- Row 3: LinkedIn-only tools. Auto-hidden when platform=x. -->
+        <div data-platforms="linkedin" class="flex items-center gap-1.5 flex-wrap" style="padding:4px 0;border-top:1px dashed #2f3336;margin-top:2px">
+          <span class="text-xs px-1.5 py-0.5 rounded font-mono" style="background:#0a66c2;color:white">LI</span>
+          <button id="prospect-enrich-all-btn" class="sb-btn-ghost" style="padding:4px 10px;font-size:12px" title="Enrich un-enriched LinkedIn prospects via Apify (title, company, summary, positions, skills, ...).">Enrich all (Apify)</button>
+          <button id="prospect-embed-score-btn" class="sb-btn-ghost" style="padding:4px 10px;font-size:12px" title="Embed LinkedIn prospects + ICP via OpenRouter, rank by single-vector cosine.">Embed score</button>
+          <span class="text-xs text-x-text-secondary ml-auto" style="font-style:italic">Fill prospects via Workflows → Fill LinkedIn Prospects</span>
+        </div>
+
+        <div id="prospect-progress" class="text-xs text-x-text-secondary hidden" style="margin-top:2px"></div>
+        <div id="prospect-platform-hint" class="text-xs text-x-text-secondary hidden"></div>
+      </div>
+
+      <!-- Results -->
+      <div id="prospect-results" class="flex-1 overflow-y-auto p-3 space-y-2">
+        <p class="text-xs text-x-text-secondary text-center mt-8 px-6 leading-relaxed">
+          Type ICP above, hit <b>Find</b>. LLM parses criteria, scores candidates from crawled circle.
+        </p>
       </div>
     </div>
 
@@ -453,6 +604,41 @@
     ════════════════════════════════════════════════════════ -->
     <div id="panel-settings" class="panel flex-1 flex flex-col overflow-hidden hidden">
       <div class="flex-1 overflow-y-auto p-4 space-y-6">
+
+        <section>
+          <h2 class="settings-heading">Identity (local only)</h2>
+          <p class="text-xs text-x-text-secondary mb-2">Stored in user-local <code>settings.json</code>. Never committed. Pre-fills ICP prompts, search seeds, outreach context across the app.</p>
+          <div class="space-y-2 text-xs">
+            <div>
+              <label class="text-x-text-secondary block mb-1">Outreach context: X / Twitter (peer-builder voice)</label>
+              <textarea id="id-outreach-context-x" rows="3" class="sb-textarea text-xs" placeholder="e.g. indie builder shipping <product>. Reach out to compare notes, share a tool."></textarea>
+            </div>
+            <div>
+              <label class="text-x-text-secondary block mb-1">Outreach context: LinkedIn (sales voice for buyers)</label>
+              <textarea id="id-outreach-context-li" rows="4" class="sb-textarea text-xs" placeholder="e.g. builder of <product> + AI-workflow consultant. Help non-tech SMB owners get a modern website + AI workflows that save hours. Open with one specific time/money pain."></textarea>
+            </div>
+            <div>
+              <label class="text-x-text-secondary block mb-1">Default ICP prompt: X / Twitter</label>
+              <textarea id="id-icp-x" rows="3" class="sb-textarea text-xs" placeholder="e.g. Indie hackers building AI-coding tools, active on X about Claude Code / Cursor, &gt;1k followers..."></textarea>
+            </div>
+            <div>
+              <label class="text-x-text-secondary block mb-1">Default ICP prompt: LinkedIn</label>
+              <textarea id="id-icp-li" rows="3" class="sb-textarea text-xs" placeholder="e.g. B2B SaaS founders at AI-native startups, 1-50 employees, India/US, building dev tools..."></textarea>
+            </div>
+            <div>
+              <label class="text-x-text-secondary block mb-1">LinkedIn search seeds (comma-separated)</label>
+              <input id="id-li-seeds" type="text" class="sb-textarea font-mono text-xs w-full" placeholder="founder, indie hacker, AI agent builder" />
+            </div>
+            <div>
+              <label class="text-x-text-secondary block mb-1">X people-search seeds (comma-separated)</label>
+              <input id="id-x-seeds" type="text" class="sb-textarea font-mono text-xs w-full" placeholder="cbd founder, cannabis founder, shopify founder, d2c founder" />
+            </div>
+            <div class="flex justify-end">
+              <button id="btn-save-identity" class="sb-btn-primary text-xs">Save identity</button>
+            </div>
+            <p id="id-save-status" class="text-x-text-secondary"></p>
+          </div>
+        </section>
 
         <section>
           <h2 class="settings-heading">LLM Provider</h2>
