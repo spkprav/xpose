@@ -188,6 +188,7 @@ function livePhaseLabel(phase) {
     'who-to-follow': 'who to follow',
     explore: 'explore',
     news: 'explore news',
+    sync: 'copying the database',
     passive: 'watching the network',
   };
   return labels[phase] || phase || 'off';
