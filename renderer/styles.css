@@ -223,6 +223,13 @@ select.sb-input {
   background: #00a36e;
 }
 
+.live-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 .live-toolbar-gap {
   display: flex;
   align-items: center;
@@ -310,6 +317,11 @@ select.sb-input {
 .sb-btn-ghost:hover {
   color: #e7e9ea;
   border-color: #4a5058;
+}
+
+.sb-btn-ghost:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .sb-textarea {

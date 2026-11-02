@@ -2570,6 +2570,10 @@ function createWindow() {
     liveRunner?.setIntervalMinutes(minutes);
   });
 
+  ipcMain.on('live-sync', () => {
+    liveRunner?.syncNow();
+  });
+
   ipcMain.on('live-get', () => {
     liveRunner?.emitNow();
   });

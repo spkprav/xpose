@@ -198,6 +198,7 @@ function renderLive(status) {
   liveStatus = status || liveStatus;
   if (!liveStatus) return;
   const btn = $('#btn-live-play');
+  const syncBtn = $('#btn-live-sync');
   const next = $('#live-next');
   const strip = $('#live-strip');
   const stripText = $('#live-strip-text');
@@ -218,6 +219,12 @@ function renderLive(status) {
   btn.classList.toggle('live-on', on);
   btn.title = on ? 'Click to stop' : 'Start capturing';
 
+  if (syncBtn) {
+    const syncing = !!liveStatus.syncing || liveStatus.phase === 'sync';
+    syncBtn.disabled = syncing;
+    syncBtn.textContent = syncing ? 'Syncing' : 'Sync';
+  }
+
   if (next) {
     if (!on) next.textContent = 'off';
     else if (liveStatus.phase === 'waiting') next.textContent = 'retry soon';
@@ -226,8 +233,9 @@ function renderLive(status) {
   }
 
   if (strip && stripText) {
-    strip.classList.toggle('hidden', !on);
-    stripText.textContent = on ? livePhaseLabel(liveStatus.phase) : '';
+    const showStrip = on || liveStatus.phase === 'sync';
+    strip.classList.toggle('hidden', !showStrip);
+    stripText.textContent = showStrip ? livePhaseLabel(liveStatus.phase) : '';
   }
 
   const c = liveStatus.counts || {};
@@ -270,6 +278,10 @@ function renderLive(status) {
 $('#btn-live-play')?.addEventListener('click', () => {
   const on = !$('#btn-live-play').classList.contains('live-on');
   ipcRenderer.send('live-play', { on });
+});
+
+$('#btn-live-sync')?.addEventListener('click', () => {
+  ipcRenderer.send('live-sync');
 });
 
 $('#live-interval')?.addEventListener('change', (event) => {

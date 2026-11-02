@@ -70,7 +70,10 @@
     <div id="panel-live" class="panel flex-1 flex flex-col overflow-hidden">
       <div class="circle-toolbar">
         <div class="circle-toolbar-row1">
-          <button id="btn-live-play" class="sb-btn-primary" type="button">Play</button>
+          <div class="live-toolbar-actions">
+            <button id="btn-live-play" class="sb-btn-primary" type="button">Play</button>
+            <button id="btn-live-sync" class="sb-btn-ghost" type="button" title="Copy the database to Neon">Sync</button>
+          </div>
           <div class="live-toolbar-gap">
             <select id="live-interval" class="sb-input live-interval" title="Time between passes">
               <option value="30">30m</option>
@@ -83,7 +86,7 @@
           </div>
         </div>
       </div>
-      <p class="live-meta">Play stays on and writes tweets, trends, news, and who to follow into live_signals. On each pass it reloads home, waits for the page to finish loading, then scrolls. After that it opens who to follow, explore, and news. The time next to Play is the gap between passes. Each new person is opened for bio, link, counts, pinned posts, highlights, tweets, and replies.</p>
+      <p class="live-meta">Play stays on and writes tweets, trends, news, and who to follow into live_signals. On each pass it reloads home, waits for the page to finish loading, then scrolls. After that it opens who to follow, explore, and news. The time next to Play is the gap between passes. Each new person is opened for bio, link, counts, pinned posts, highlights, tweets, and replies. Sync copies that database to Neon.</p>
       <div id="live-strip" class="sb-crawl-strip hidden">
         <span class="crawl-pulse-dot"></span>
         <span id="live-strip-text" class="flex-1 text-xs text-x-text-secondary truncate">idle</span>
