@@ -470,12 +470,13 @@ CREATE TABLE IF NOT EXISTS drafts (
 CREATE INDEX IF NOT EXISTS idx_drafts_status ON drafts(status);
 CREATE INDEX IF NOT EXISTS idx_drafts_created_at ON drafts(created_at DESC);
 
--- Live tab: who-to-follow accounts, trends, and news headlines.
--- Tweets from the same sweep go in `tweets` with source live-*.
+-- Live tab. One row per captured thing: tweet, trend, news, who_to_follow.
+-- who_to_follow.payload also holds bio, website, counts, pinned, highlights, tweets, replies.
+-- The same tweets are still written to `tweets` with source live-*.
 CREATE TABLE IF NOT EXISTS live_signals (
     id SERIAL PRIMARY KEY,
-    kind VARCHAR(20) NOT NULL,             -- who_to_follow | trend | news
-    item_key TEXT NOT NULL,                -- handle, trend name, or headline url
+    kind VARCHAR(20) NOT NULL,             -- tweet | trend | news | who_to_follow
+    item_key TEXT NOT NULL,                -- tweet id, handle, trend name, or headline url
     title TEXT,
     detail TEXT,
     url TEXT,
@@ -486,6 +487,207 @@ CREATE TABLE IF NOT EXISTS live_signals (
 );
 
 CREATE INDEX IF NOT EXISTS idx_live_signals_kind_seen ON live_signals(kind, last_seen_at DESC);
+
+-- Append-only versions. A row lands only when the live data changes.
+-- last_seen_at / fetched_at bumps do not. Nothing here is written back.
+-- Followers a day ago, for a who-to-follow handle:
+--   SELECT payload->>'followers_count', recorded_at
+--   FROM live_signals_history
+--   WHERE kind = 'who_to_follow' AND item_key = 'someone'
+--     AND recorded_at <= now() - interval '1 day'
+--   ORDER BY recorded_at DESC, id DESC
+--   LIMIT 1;
+CREATE TABLE IF NOT EXISTS live_signals_history (
+    id BIGSERIAL PRIMARY KEY,
+    live_signal_id INT,
+    kind VARCHAR(20) NOT NULL,
+    item_key TEXT NOT NULL,
+    title TEXT,
+    detail TEXT,
+    url TEXT,
+    payload JSONB,
+    content_hash TEXT NOT NULL,
+    recorded_at TIMESTAMP NOT NULL DEFAULT clock_timestamp()
+);
+
+CREATE INDEX IF NOT EXISTS idx_live_signals_history_item
+    ON live_signals_history (kind, item_key, recorded_at DESC, id DESC);
+
+-- Same idea for tweets: follower counts and engagement, per change.
+--   SELECT user_followers_count, recorded_at
+--   FROM tweets_history
+--   WHERE user_id = 123
+--     AND recorded_at <= now() - interval '1 month'
+--   ORDER BY recorded_at DESC, id DESC
+--   LIMIT 1;
+CREATE TABLE IF NOT EXISTS tweets_history (
+    id BIGSERIAL PRIMARY KEY,
+    tweet_id BIGINT NOT NULL,
+    user_id BIGINT,
+    user_screen_name VARCHAR(50),
+    user_name VARCHAR(100),
+    user_followers_count INT,
+    user_following_count INT,
+    user_is_blue_verified BOOLEAN,
+    user_follows_me BOOLEAN,
+    i_follow_user BOOLEAN,
+    text TEXT,
+    reply_count INT,
+    retweet_count INT,
+    like_count INT,
+    quote_count INT,
+    view_count INT,
+    bookmark_count INT,
+    content_hash TEXT NOT NULL,
+    recorded_at TIMESTAMP NOT NULL DEFAULT clock_timestamp()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tweets_history_tweet
+    ON tweets_history (tweet_id, recorded_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_tweets_history_user
+    ON tweets_history (user_id, recorded_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_tweets_history_screen
+    ON tweets_history (user_screen_name, recorded_at DESC, id DESC);
+
+CREATE OR REPLACE FUNCTION live_signal_snapshot_hash(title text, detail text, url text, payload jsonb)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT md5(concat_ws('|', coalesce(title, ''), coalesce(detail, ''), coalesce(url, ''), coalesce(payload::text, '')))
+$$;
+
+CREATE OR REPLACE FUNCTION tweet_snapshot_hash(
+    followers integer, following integer, follows_me boolean, i_follow boolean, blue boolean,
+    user_name text, screen_name text, body text,
+    replies integer, retweets integer, likes integer, quotes integer, views integer, bookmarks integer
+) RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT md5(concat_ws('|',
+    coalesce(followers, 0), coalesce(following, 0), coalesce(follows_me, false), coalesce(i_follow, false),
+    coalesce(blue, false), coalesce(user_name, ''), coalesce(screen_name, ''), coalesce(body, ''),
+    coalesce(replies, 0), coalesce(retweets, 0), coalesce(likes, 0), coalesce(quotes, 0),
+    coalesce(views, 0), coalesce(bookmarks, 0)
+  ))
+$$;
+
+CREATE OR REPLACE FUNCTION live_signals_history_write()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF TG_OP = 'UPDATE' AND NOT (
+    NEW.title IS DISTINCT FROM OLD.title
+    OR NEW.detail IS DISTINCT FROM OLD.detail
+    OR NEW.url IS DISTINCT FROM OLD.url
+    OR NEW.payload IS DISTINCT FROM OLD.payload
+  ) THEN
+    RETURN NEW;
+  END IF;
+
+  -- First change after the trigger exists: keep the previous live row too.
+  IF TG_OP = 'UPDATE' AND NOT EXISTS (
+    SELECT 1 FROM live_signals_history h
+    WHERE h.kind = OLD.kind AND h.item_key = OLD.item_key
+  ) THEN
+    INSERT INTO live_signals_history (
+      live_signal_id, kind, item_key, title, detail, url, payload, content_hash
+    ) VALUES (
+      OLD.id, OLD.kind, OLD.item_key, OLD.title, OLD.detail, OLD.url, OLD.payload,
+      live_signal_snapshot_hash(OLD.title, OLD.detail, OLD.url, OLD.payload)
+    );
+  END IF;
+
+  INSERT INTO live_signals_history (
+    live_signal_id, kind, item_key, title, detail, url, payload, content_hash
+  ) VALUES (
+    NEW.id, NEW.kind, NEW.item_key, NEW.title, NEW.detail, NEW.url, NEW.payload,
+    live_signal_snapshot_hash(NEW.title, NEW.detail, NEW.url, NEW.payload)
+  );
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION tweets_history_write()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF TG_OP = 'UPDATE' AND NOT (
+    NEW.user_followers_count IS DISTINCT FROM OLD.user_followers_count
+    OR NEW.user_following_count IS DISTINCT FROM OLD.user_following_count
+    OR NEW.user_follows_me IS DISTINCT FROM OLD.user_follows_me
+    OR NEW.i_follow_user IS DISTINCT FROM OLD.i_follow_user
+    OR NEW.user_is_blue_verified IS DISTINCT FROM OLD.user_is_blue_verified
+    OR NEW.user_name IS DISTINCT FROM OLD.user_name
+    OR NEW.user_screen_name IS DISTINCT FROM OLD.user_screen_name
+    OR NEW.text IS DISTINCT FROM OLD.text
+    OR NEW.reply_count IS DISTINCT FROM OLD.reply_count
+    OR NEW.retweet_count IS DISTINCT FROM OLD.retweet_count
+    OR NEW.like_count IS DISTINCT FROM OLD.like_count
+    OR NEW.quote_count IS DISTINCT FROM OLD.quote_count
+    OR NEW.view_count IS DISTINCT FROM OLD.view_count
+    OR NEW.bookmark_count IS DISTINCT FROM OLD.bookmark_count
+  ) THEN
+    RETURN NEW;
+  END IF;
+
+  IF TG_OP = 'UPDATE' AND NOT EXISTS (
+    SELECT 1 FROM tweets_history h WHERE h.tweet_id = OLD.id
+  ) THEN
+    INSERT INTO tweets_history (
+      tweet_id, user_id, user_screen_name, user_name,
+      user_followers_count, user_following_count, user_is_blue_verified,
+      user_follows_me, i_follow_user, text,
+      reply_count, retweet_count, like_count, quote_count, view_count, bookmark_count,
+      content_hash
+    ) VALUES (
+      OLD.id, OLD.user_id, OLD.user_screen_name, OLD.user_name,
+      OLD.user_followers_count, OLD.user_following_count, OLD.user_is_blue_verified,
+      OLD.user_follows_me, OLD.i_follow_user, OLD.text,
+      OLD.reply_count, OLD.retweet_count, OLD.like_count, OLD.quote_count, OLD.view_count, OLD.bookmark_count,
+      tweet_snapshot_hash(
+        OLD.user_followers_count, OLD.user_following_count, OLD.user_follows_me, OLD.i_follow_user,
+        OLD.user_is_blue_verified, OLD.user_name, OLD.user_screen_name, OLD.text,
+        OLD.reply_count, OLD.retweet_count, OLD.like_count, OLD.quote_count, OLD.view_count, OLD.bookmark_count
+      )
+    );
+  END IF;
+
+  INSERT INTO tweets_history (
+    tweet_id, user_id, user_screen_name, user_name,
+    user_followers_count, user_following_count, user_is_blue_verified,
+    user_follows_me, i_follow_user, text,
+    reply_count, retweet_count, like_count, quote_count, view_count, bookmark_count,
+    content_hash
+  ) VALUES (
+    NEW.id, NEW.user_id, NEW.user_screen_name, NEW.user_name,
+    NEW.user_followers_count, NEW.user_following_count, NEW.user_is_blue_verified,
+    NEW.user_follows_me, NEW.i_follow_user, NEW.text,
+    NEW.reply_count, NEW.retweet_count, NEW.like_count, NEW.quote_count, NEW.view_count, NEW.bookmark_count,
+    tweet_snapshot_hash(
+      NEW.user_followers_count, NEW.user_following_count, NEW.user_follows_me, NEW.i_follow_user,
+      NEW.user_is_blue_verified, NEW.user_name, NEW.user_screen_name, NEW.text,
+      NEW.reply_count, NEW.retweet_count, NEW.like_count, NEW.quote_count, NEW.view_count, NEW.bookmark_count
+    )
+  );
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS live_signals_history_trg ON live_signals;
+CREATE TRIGGER live_signals_history_trg
+  AFTER INSERT OR UPDATE ON live_signals
+  FOR EACH ROW
+  EXECUTE PROCEDURE live_signals_history_write();
+
+DROP TRIGGER IF EXISTS tweets_history_trg ON tweets;
+CREATE TRIGGER tweets_history_trg
+  AFTER INSERT OR UPDATE ON tweets
+  FOR EACH ROW
+  EXECUTE PROCEDURE tweets_history_write();
 
 -- 2nd-degree connection candidates: non-circle users that circle frequently replies to
 CREATE OR REPLACE VIEW second_degree_candidates AS

@@ -242,7 +242,7 @@ function renderLive(status) {
   }
 
   if (recentEl) {
-    const kindLabel = { who_to_follow: 'who to follow', trend: 'trend', news: 'news' };
+    const kindLabel = { who_to_follow: 'who to follow', trend: 'trend', news: 'news', tweet: 'tweet' };
     const rows = liveStatus.recent || [];
     recentEl.innerHTML = rows.length
       ? rows.slice().reverse().map(row => `
