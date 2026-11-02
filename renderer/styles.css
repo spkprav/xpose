@@ -223,6 +223,24 @@ select.sb-input {
   background: #00a36e;
 }
 
+.live-toolbar-gap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.live-interval {
+  width: 62px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  flex-shrink: 0;
+}
+
+#live-next {
+  white-space: nowrap;
+}
+
 .live-meta {
   padding: 8px 12px 4px;
   font-size: 11px;

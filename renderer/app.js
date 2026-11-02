@@ -169,7 +169,11 @@ function formatLiveRemaining(nextAt) {
   const sec = Math.max(0, Math.round((nextAt - Date.now()) / 1000));
   const m = Math.floor(sec / 60);
   const s = sec % 60;
-  if (m >= 60) return `${Math.floor(m / 60)}h ${m % 60}m`;
+  if (m >= 60) {
+    const h = Math.floor(m / 60);
+    const rem = m % 60;
+    return rem ? `${h}h ${rem}m` : `${h}h`;
+  }
   if (m > 0) return `${m}m ${String(s).padStart(2, '0')}s`;
   return `${s}s`;
 }
@@ -201,6 +205,12 @@ function renderLive(status) {
   const logEl = $('#live-log');
   const recentEl = $('#live-recent');
   if (!btn) return;
+
+  const interval = $('#live-interval');
+  if (interval && liveStatus.intervalMinutes) {
+    const picked = String(liveStatus.intervalMinutes);
+    if ([...interval.options].some(option => option.value === picked)) interval.value = picked;
+  }
 
   const on = !!liveStatus.running;
   btn.textContent = on ? 'On' : 'Play';
@@ -259,6 +269,10 @@ function renderLive(status) {
 $('#btn-live-play')?.addEventListener('click', () => {
   const on = !$('#btn-live-play').classList.contains('live-on');
   ipcRenderer.send('live-play', { on });
+});
+
+$('#live-interval')?.addEventListener('change', (event) => {
+  ipcRenderer.send('live-interval', { minutes: Number(event.target.value) });
 });
 
 ipcRenderer.on('live-status', (_event, status) => {

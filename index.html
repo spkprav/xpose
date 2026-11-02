@@ -71,10 +71,19 @@
       <div class="circle-toolbar">
         <div class="circle-toolbar-row1">
           <button id="btn-live-play" class="sb-btn-primary" type="button">Play</button>
-          <span id="live-next" class="text-xs text-x-text-secondary">off</span>
+          <div class="live-toolbar-gap">
+            <select id="live-interval" class="sb-input live-interval" title="Time between passes">
+              <option value="30">30m</option>
+              <option value="60">1h</option>
+              <option value="120" selected>2h</option>
+              <option value="240">4h</option>
+              <option value="480">8h</option>
+            </select>
+            <span id="live-next" class="text-xs text-x-text-secondary">off</span>
+          </div>
         </div>
       </div>
-      <p class="live-meta">Play stays on and writes tweets, trends, news, and who to follow into live_signals. Every 5 minutes it reloads home, waits for the page to finish loading, then scrolls. After that it opens who to follow, explore, and news. Each new person is opened for bio, link, counts, pinned posts, highlights, tweets, and replies.</p>
+      <p class="live-meta">Play stays on and writes tweets, trends, news, and who to follow into live_signals. On each pass it reloads home, waits for the page to finish loading, then scrolls. After that it opens who to follow, explore, and news. The time next to Play is the gap between passes. Each new person is opened for bio, link, counts, pinned posts, highlights, tweets, and replies.</p>
       <div id="live-strip" class="sb-crawl-strip hidden">
         <span class="crawl-pulse-dot"></span>
         <span id="live-strip-text" class="flex-1 text-xs text-x-text-secondary truncate">idle</span>

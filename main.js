@@ -2551,6 +2551,12 @@ function createWindow() {
         const prev = settings.get('liveCapture') || {};
         settings.set('liveCapture', { ...prev, running: !!running });
       },
+      persistInterval: (minutes) => {
+        if (!settings) return;
+        const prev = settings.get('liveCapture') || {};
+        settings.set('liveCapture', { ...prev, intervalMinutes: minutes });
+      },
+      intervalMinutes: settings.get('liveCapture')?.intervalMinutes,
     });
   }
 
@@ -2558,6 +2564,10 @@ function createWindow() {
     if (!liveRunner) return;
     if (on) liveRunner.start();
     else liveRunner.stop();
+  });
+
+  ipcMain.on('live-interval', (_event, { minutes } = {}) => {
+    liveRunner?.setIntervalMinutes(minutes);
   });
 
   ipcMain.on('live-get', () => {
