@@ -27,6 +27,7 @@ const workflowsRegistry = require('./lib/workflows');
 const { getIdentity } = require('./lib/identity');
 const LiveRunner = require('./lib/live/runner');
 const { isLiveCaptureUrl } = require('./lib/live/extract');
+const LIVE_PAGE_HOOK = require('./lib/live/page-hook');
 
 let win, twitterView, crawlView, linkedinView, settings, llmClient;
 let activePlatform = 'x';
@@ -38,6 +39,7 @@ const requestMap = new Map();
 const liveRequestMap = new Map();
 const crawlRequestMap = new Map();
 let liveRunner = null;
+let liveNetHooked = false;
 // Registered while an X-prospect discovery workflow is running. Receives raw
 // SearchTimeline GraphQL responses from crawlView. Null when no workflow active.
 let xSearchListener = null;
@@ -1474,11 +1476,22 @@ function createWindow() {
       if (!listInfo && !requestInfo && !liveUrl) return;
 
       let jsonResponse = null;
+      let rawBody = null;
       try {
         const response = await twitterView.webContents.debugger.sendCommand('Network.getResponseBody', { requestId: params.requestId });
-        jsonResponse = JSON.parse(response.body);
-      } catch (_) {
+        rawBody = response.base64Encoded
+          ? Buffer.from(response.body, 'base64').toString('utf8')
+          : response.body;
+        jsonResponse = JSON.parse(rawBody);
+      } catch (err) {
+        if (liveUrl && liveRunner?.running && !liveRunner.pageHook) {
+          liveRunner.lastBodyError = err.message;
+        }
         return;
+      }
+
+      if (liveUrl && rawBody && liveRunner?.running && !liveRunner.pageHook) {
+        liveRunner.accept(liveUrl, rawBody);
       }
 
       // Handle followers/following list interception
@@ -1577,6 +1590,20 @@ function createWindow() {
     maxResourceBufferSize: 10000000,
     maxTotalBufferSize: 50000000
   });
+
+  // Copy GraphQL bodies out of the page itself. Network.getResponseBody was
+  // coming back empty for these responses, so the sweep logged "nothing new"
+  // with an empty database.
+  twitterView.webContents.debugger.sendCommand('Page.enable').then(() => {
+    return twitterView.webContents.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', {
+      source: LIVE_PAGE_HOOK,
+    });
+  }).then(() => {
+    console.log('[Live] page hook armed');
+  }).catch(err => {
+    console.error('[Live] page hook arm failed:', err.message);
+  });
+  twitterView.webContents.executeJavaScript(LIVE_PAGE_HOOK).catch(() => {});
 
   // ==================
   // Crawl View Debugger
@@ -2536,6 +2563,16 @@ function createWindow() {
   ipcMain.on('live-get', () => {
     liveRunner?.emitNow();
   });
+
+  if (!liveNetHooked) {
+    liveNetHooked = true;
+    ipcMain.on('live-net-body', (_event, { url, body } = {}) => {
+      if (!liveRunner?.running || !url || !body) return;
+      if (!isLiveCaptureUrl(url)) return;
+      liveRunner.pageHook = true;
+      liveRunner.accept(url, body);
+    });
+  }
 
   if (settings.get('liveCapture')?.running) {
     liveRunner.start();

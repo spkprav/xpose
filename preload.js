@@ -1,4 +1,8 @@
-const { contextBridge } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('xposeLive', {
+  deliver: (url, body) => ipcRenderer.send('live-net-body', { url, body }),
+});
 
 contextBridge.exposeInMainWorld('api', {
   switchTabs: () => {
