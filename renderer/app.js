@@ -159,6 +159,120 @@ $$('.tab-btn').forEach(btn => {
 });
 
 // ═══════════════════════════════════════════════════
+// Live tab
+// ═══════════════════════════════════════════════════
+let liveStatus = null;
+let liveClockTimer = null;
+
+function formatLiveRemaining(nextAt) {
+  if (!nextAt) return '';
+  const sec = Math.max(0, Math.round((nextAt - Date.now()) / 1000));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m >= 60) return `${Math.floor(m / 60)}h ${m % 60}m`;
+  if (m > 0) return `${m}m ${String(s).padStart(2, '0')}s`;
+  return `${s}s`;
+}
+
+function livePhaseLabel(phase) {
+  const labels = {
+    off: 'off',
+    idle: 'idle, watching the network',
+    waiting: 'waiting for the view',
+    home: 'home, today and what is happening',
+    scroll: 'scrolling home',
+    'who-to-follow': 'who to follow',
+    explore: 'explore',
+    news: 'explore news',
+    passive: 'watching the network',
+  };
+  return labels[phase] || phase || 'off';
+}
+
+function renderLive(status) {
+  liveStatus = status || liveStatus;
+  if (!liveStatus) return;
+  const btn = $('#btn-live-play');
+  const next = $('#live-next');
+  const strip = $('#live-strip');
+  const stripText = $('#live-strip-text');
+  const counts = $('#live-counts');
+  const errEl = $('#live-error');
+  const logEl = $('#live-log');
+  const recentEl = $('#live-recent');
+  if (!btn) return;
+
+  const on = !!liveStatus.running;
+  btn.textContent = on ? 'On' : 'Play';
+  btn.classList.toggle('live-on', on);
+  btn.title = on ? 'Click to stop' : 'Start capturing';
+
+  if (next) {
+    if (!on) next.textContent = 'off';
+    else if (liveStatus.phase === 'waiting') next.textContent = 'retry soon';
+    else if (liveStatus.nextAt) next.textContent = `next pass ${formatLiveRemaining(liveStatus.nextAt)}`;
+    else next.textContent = 'pass running';
+  }
+
+  if (strip && stripText) {
+    strip.classList.toggle('hidden', !on);
+    stripText.textContent = on ? livePhaseLabel(liveStatus.phase) : '';
+  }
+
+  const c = liveStatus.counts || {};
+  if (counts) {
+    counts.textContent = `${c.tweets || 0} tweets · ${c.people || 0} people · ${c.news || 0} news · ${c.trends || 0} trends`;
+  }
+
+  if (errEl) {
+    if (liveStatus.lastError) {
+      errEl.textContent = liveStatus.lastError;
+      errEl.classList.remove('hidden');
+    } else {
+      errEl.textContent = '';
+      errEl.classList.add('hidden');
+    }
+  }
+
+  if (logEl) {
+    const lines = (liveStatus.log || []).slice().reverse();
+    logEl.innerHTML = lines.length
+      ? lines.map(line => `<div class="live-log-row"><span class="live-log-time">${escapeHtml(line.t)}</span>${escapeHtml(line.text)}</div>`).join('')
+      : '<div class="live-log-row"><span class="live-log-time"> </span>nothing yet</div>';
+  }
+
+  if (recentEl) {
+    const kindLabel = { who_to_follow: 'who to follow', trend: 'trend', news: 'news' };
+    const rows = liveStatus.recent || [];
+    recentEl.innerHTML = rows.length
+      ? rows.slice().reverse().map(row => `
+          <div class="live-signal-row">
+            <span class="live-kind">${escapeHtml(kindLabel[row.kind] || row.kind || '')}</span>
+            <div>${escapeHtml(row.title || '')}</div>
+            ${row.detail ? `<div class="text-x-text-secondary">${escapeHtml(row.detail)}</div>` : ''}
+          </div>
+        `).join('')
+      : '<div class="live-signal-row text-x-text-secondary">people, trends, and headlines show up here</div>';
+  }
+}
+
+$('#btn-live-play')?.addEventListener('click', () => {
+  const on = !$('#btn-live-play').classList.contains('live-on');
+  ipcRenderer.send('live-play', { on });
+});
+
+ipcRenderer.on('live-status', (_event, status) => {
+  renderLive(status);
+});
+
+ipcRenderer.send('live-get');
+liveClockTimer = setInterval(() => {
+  if (!liveStatus?.running || !liveStatus.nextAt) return;
+  const next = $('#live-next');
+  if (next) next.textContent = `next pass ${formatLiveRemaining(liveStatus.nextAt)}`;
+}, 1000);
+
+// ═══════════════════════════════════════════════════
 // Header utilities
 // ═══════════════════════════════════════════════════
 $('#btn-reload').addEventListener('click', () => {

@@ -25,6 +25,8 @@ const { snapshotHtml: linkedinSnapshotHtml, SNAP_DIR: LI_SNAP_DIR } = require('.
 const { sanitizeMany: sanitizeLinkedinRows } = require('./lib/linkedin/quality');
 const workflowsRegistry = require('./lib/workflows');
 const { getIdentity } = require('./lib/identity');
+const LiveRunner = require('./lib/live/runner');
+const { isLiveCaptureUrl } = require('./lib/live/extract');
 
 let win, twitterView, crawlView, linkedinView, settings, llmClient;
 let activePlatform = 'x';
@@ -33,7 +35,9 @@ let fetchedTweets = [];
 let currentLinkIndex = 0;
 let feedLinks = [];
 const requestMap = new Map();
+const liveRequestMap = new Map();
 const crawlRequestMap = new Map();
+let liveRunner = null;
 // Registered while an X-prospect discovery workflow is running. Receives raw
 // SearchTimeline GraphQL responses from crawlView. Null when no workflow active.
 let xSearchListener = null;
@@ -1447,21 +1451,43 @@ function createWindow() {
         const listType = url.includes('/Followers') ? 'follower' : 'following';
         listRequestMap.set(params.requestId, { url, listType });
       }
+      if (liveRunner && liveRunner.running && isLiveCaptureUrl(url)) {
+        liveRequestMap.set(params.requestId, url);
+      }
+      return;
+    }
+
+    if (method === 'Network.loadingFailed') {
+      requestMap.delete(params.requestId);
+      listRequestMap.delete(params.requestId);
+      liveRequestMap.delete(params.requestId);
       return;
     }
 
     if (method === 'Network.loadingFinished') {
-      // Handle followers/following list interception
       const listInfo = listRequestMap.get(params.requestId);
+      const requestInfo = requestMap.get(params.requestId);
+      const liveUrl = liveRequestMap.get(params.requestId);
+      if (listInfo) listRequestMap.delete(params.requestId);
+      if (requestInfo) requestMap.delete(params.requestId);
+      if (liveUrl) liveRequestMap.delete(params.requestId);
+      if (!listInfo && !requestInfo && !liveUrl) return;
+
+      let jsonResponse = null;
+      try {
+        const response = await twitterView.webContents.debugger.sendCommand('Network.getResponseBody', { requestId: params.requestId });
+        jsonResponse = JSON.parse(response.body);
+      } catch (_) {
+        return;
+      }
+
+      // Handle followers/following list interception
       if (listInfo) {
-        listRequestMap.delete(params.requestId);
         try {
-          const response = await twitterView.webContents.debugger.sendCommand('Network.getResponseBody', { requestId: params.requestId });
-          const json = JSON.parse(response.body);
           const { extractFollowerFromGraphQL } = require('./lib/twitter/extractors');
           const { CRAWL_ENTRY_PATHS } = require('./lib/twitter/constants');
           const key = listInfo.listType === 'follower' ? 'Followers' : 'Following';
-          const instructions = CRAWL_ENTRY_PATHS[key]?.(json.data || json);
+          const instructions = CRAWL_ENTRY_PATHS[key]?.(jsonResponse.data || jsonResponse);
           if (instructions) {
             for (const instr of instructions) {
               if (instr.type !== 'TimelineAddEntries') continue;
@@ -1472,22 +1498,23 @@ function createWindow() {
             }
             console.log(`[ListFetch] ${key}: captured ${listCaptured.length} total so far`);
           } else {
-            // Log top-level keys so we can fix the path if wrong
-            const data = json.data || json;
+            const data = jsonResponse.data || jsonResponse;
             console.log(`[ListFetch] ${key}: no instructions found. Top-level keys:`, Object.keys(data));
           }
         } catch (_) {}
-        return;
       }
 
-      const requestInfo = requestMap.get(params.requestId);
+      if (liveUrl && liveRunner && liveRunner.running) {
+        try {
+          await liveRunner.ingest(jsonResponse, liveUrl);
+        } catch (err) {
+          console.error('[Live] ingest error:', err.message);
+        }
+      }
+
       if (!requestInfo) return;
 
-      requestMap.delete(params.requestId);
-
       try {
-        const response = await twitterView.webContents.debugger.sendCommand('Network.getResponseBody', { requestId: params.requestId });
-        const jsonResponse = JSON.parse(response.body);
 
         // Lists tab: tag tweets from active X-list with source provenance.
         // Uses the slug captured at REQUEST time (requestInfo.listSlug) so a
@@ -2479,6 +2506,40 @@ function createWindow() {
       win.webContents.send('wiki-exported', { success: false, error: err.message });
     }
   });
+
+  // ==================
+  // Live tab: keep capturing whatever the X view loads
+  // ==================
+  if (!liveRunner) {
+    liveRunner = new LiveRunner({
+      getView: () => twitterView,
+      db,
+      isBusy: () => !!(activeListSlug || fetchingList || pendingFetch),
+      getPlatform: () => activePlatform,
+      emit: (status) => {
+        if (win && !win.isDestroyed()) win.webContents.send('live-status', status);
+      },
+      persistRunning: (running) => {
+        if (!settings) return;
+        const prev = settings.get('liveCapture') || {};
+        settings.set('liveCapture', { ...prev, running: !!running });
+      },
+    });
+  }
+
+  ipcMain.on('live-play', (_event, { on } = {}) => {
+    if (!liveRunner) return;
+    if (on) liveRunner.start();
+    else liveRunner.stop();
+  });
+
+  ipcMain.on('live-get', () => {
+    liveRunner?.emitNow();
+  });
+
+  if (settings.get('liveCapture')?.running) {
+    liveRunner.start();
+  }
 
   // Recompute BrowserView bounds on every state change that affects the content
   // area. macOS fires `resize` differently for maximize/fullscreen transitions

@@ -50,7 +50,8 @@
 
     <!-- ── Tab strip ──────────────────────────────────────── -->
     <nav class="sb-tabs">
-      <button data-tab="circle"    data-platforms="x"          class="tab-btn active">Circle</button>
+      <button data-tab="live"      data-platforms="x"          class="tab-btn active">Live</button>
+      <button data-tab="circle"    data-platforms="x"          class="tab-btn">Circle</button>
       <button data-tab="crawl"     data-platforms="x"          class="tab-btn">Crawl</button>
       <button data-tab="lists"     data-platforms="x"          class="tab-btn">Lists</button>
       <button data-tab="reply"     data-platforms="x"          class="tab-btn">Reply</button>
@@ -64,9 +65,34 @@
     <div id="global-status" class="sb-global-status hidden"></div>
 
     <!-- ═══════════════════════════════════════════════════════
+         LIVE PANEL
+    ════════════════════════════════════════════════════════ -->
+    <div id="panel-live" class="panel flex-1 flex flex-col overflow-hidden">
+      <div class="circle-toolbar">
+        <div class="circle-toolbar-row1">
+          <button id="btn-live-play" class="sb-btn-primary" type="button">Play</button>
+          <span id="live-next" class="text-xs text-x-text-secondary">off</span>
+        </div>
+      </div>
+      <p class="live-meta">Play stays on and writes every tweet that arrives on the X network into the tweets table. Every 5 minutes it reloads home, scrolls 4 times, then opens who to follow, explore, and news.</p>
+      <div id="live-strip" class="sb-crawl-strip hidden">
+        <span class="crawl-pulse-dot"></span>
+        <span id="live-strip-text" class="flex-1 text-xs text-x-text-secondary truncate">idle</span>
+      </div>
+      <div id="live-counts" class="live-counts">0 tweets</div>
+      <div id="live-error" class="live-error hidden"></div>
+      <div class="live-scroll flex-1 overflow-y-auto">
+        <h2 class="settings-heading live-section">Pass</h2>
+        <div id="live-log"></div>
+        <h2 class="settings-heading live-section">Latest</h2>
+        <div id="live-recent"></div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════
          CIRCLE PANEL
     ════════════════════════════════════════════════════════ -->
-    <div id="panel-circle" class="panel flex-1 flex flex-col overflow-hidden">
+    <div id="panel-circle" class="panel flex-1 flex flex-col overflow-hidden hidden">
 
       <!-- Toolbar: two rows -->
       <div class="circle-toolbar">

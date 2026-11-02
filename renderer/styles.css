@@ -215,6 +215,66 @@ select.sb-input {
   cursor: not-allowed;
 }
 
+.sb-btn-primary.live-on {
+  background: #00ba7c;
+}
+
+.sb-btn-primary.live-on:hover {
+  background: #00a36e;
+}
+
+.live-meta {
+  padding: 8px 12px 4px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #71767b;
+}
+
+.live-counts {
+  padding: 2px 12px 8px;
+  font-size: 12px;
+  color: #e7e9ea;
+  border-bottom: 1px solid #2f3336;
+}
+
+.live-error {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: #f87171;
+  border-bottom: 1px solid #2f3336;
+}
+
+.live-section {
+  padding: 10px 12px 4px;
+  margin-bottom: 0;
+}
+
+.live-log-row,
+.live-signal-row {
+  padding: 6px 12px;
+  border-bottom: 1px solid #2f3336;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.live-log-time,
+.live-kind {
+  color: #71767b;
+}
+
+.live-log-time {
+  margin-right: 6px;
+}
+
+.live-kind {
+  display: block;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 2px;
+}
+
 .sb-btn-ghost {
   padding: 6px 8px;
   font-size: 11px;

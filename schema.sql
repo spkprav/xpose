@@ -470,6 +470,23 @@ CREATE TABLE IF NOT EXISTS drafts (
 CREATE INDEX IF NOT EXISTS idx_drafts_status ON drafts(status);
 CREATE INDEX IF NOT EXISTS idx_drafts_created_at ON drafts(created_at DESC);
 
+-- Live tab: who-to-follow accounts, trends, and news headlines.
+-- Tweets from the same sweep go in `tweets` with source live-*.
+CREATE TABLE IF NOT EXISTS live_signals (
+    id SERIAL PRIMARY KEY,
+    kind VARCHAR(20) NOT NULL,             -- who_to_follow | trend | news
+    item_key TEXT NOT NULL,                -- handle, trend name, or headline url
+    title TEXT,
+    detail TEXT,
+    url TEXT,
+    payload JSONB,
+    first_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (kind, item_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_live_signals_kind_seen ON live_signals(kind, last_seen_at DESC);
+
 -- 2nd-degree connection candidates: non-circle users that circle frequently replies to
 CREATE OR REPLACE VIEW second_degree_candidates AS
 SELECT in_reply_to_screen_name AS screen_name, COUNT(*) AS interaction_count
