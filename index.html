@@ -25,12 +25,6 @@
   <link rel="stylesheet" href="./renderer/styles.css">
 </head>
 <body class="h-screen overflow-hidden bg-x-bg text-x-text">
-  <div id="browser-tabs" role="tablist" aria-label="Pages">
-    <button type="button" class="browser-tab active" data-browser-tab="x" role="tab" aria-selected="true">X</button>
-    <button type="button" class="browser-tab" data-browser-tab="home" role="tab" aria-selected="false" title="Reloads x.com/home every 5 minutes">Home</button>
-    <button type="button" id="btn-home-reload" class="browser-tab-reload" title="Reload home now">Reload</button>
-    <span id="home-tab-meta" class="browser-tab-meta"></span>
-  </div>
   <div id="content" class="h-full"></div>
 
   <div id="sidebar" class="fixed top-0 right-0 h-full bg-x-surface border-l border-x-border flex flex-col" style="width:320px">
@@ -362,6 +356,12 @@
 
       <!-- Cards -->
       <div id="lists-cards" class="flex-1 overflow-y-auto p-3 space-y-2"></div>
+
+      <form id="list-add-form" class="list-add">
+        <input id="list-add-label" type="text" placeholder="Name" class="sb-textarea text-xs" />
+        <input id="list-add-id" type="text" inputmode="numeric" placeholder="List ID or x.com/i/lists/… URL" class="sb-textarea font-mono text-xs" />
+        <button type="submit" id="btn-add-list" class="sb-btn-primary">Add list</button>
+      </form>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════
@@ -710,30 +710,8 @@
         </section>
 
         <section>
-          <h2 class="settings-heading">X-list IDs</h2>
-          <p class="text-xs text-x-text-secondary mb-2">Numeric ID from <code>x.com/i/lists/&lt;ID&gt;</code>. Drives the Lists tab.</p>
-          <div class="space-y-1.5">
-            <div class="flex items-center gap-2">
-              <label class="text-xs text-x-text-secondary w-32 shrink-0">anchors</label>
-              <input id="list-id-anchors" placeholder="1234567890" class="sb-textarea font-mono text-xs flex-1" />
-            </div>
-            <div class="flex items-center gap-2">
-              <label class="text-xs text-x-text-secondary w-32 shrink-0">venues</label>
-              <input id="list-id-venues" placeholder="1234567890" class="sb-textarea font-mono text-xs flex-1" />
-            </div>
-            <div class="flex items-center gap-2">
-              <label class="text-xs text-x-text-secondary w-32 shrink-0">mutuals-rising</label>
-              <input id="list-id-mutuals-rising" placeholder="1234567890" class="sb-textarea font-mono text-xs flex-1" />
-            </div>
-            <div class="flex items-center gap-2">
-              <label class="text-xs text-x-text-secondary w-32 shrink-0">high-velocity-replies</label>
-              <input id="list-id-high-velocity-replies" placeholder="1234567890" class="sb-textarea font-mono text-xs flex-1" />
-            </div>
-            <div class="flex items-center gap-2">
-              <label class="text-xs text-x-text-secondary w-32 shrink-0">growth-study</label>
-              <input id="list-id-growth-study" placeholder="1234567890" class="sb-textarea font-mono text-xs flex-1" />
-            </div>
-          </div>
+          <h2 class="settings-heading">X lists</h2>
+          <p class="text-xs text-x-text-secondary mb-2">Add and remove lists on the Lists tab. The ID is the number in <code>x.com/i/lists/&lt;ID&gt;</code>.</p>
         </section>
 
         <section>

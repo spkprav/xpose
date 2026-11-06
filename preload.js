@@ -4,10 +4,6 @@ contextBridge.exposeInMainWorld('xposeLive', {
   deliver: (url, body) => ipcRenderer.send('live-net-body', { url, body }),
 });
 
-contextBridge.exposeInMainWorld('xposeHome', {
-  deliver: (url, body) => ipcRenderer.send('home-net-body', { url, body }),
-});
-
 contextBridge.exposeInMainWorld('api', {
   switchTabs: () => {
     const element = document.querySelector('[data-testid="primaryColumn"]');

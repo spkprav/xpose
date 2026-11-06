@@ -26,10 +26,49 @@ let activeListSlug = null;
 let listStatsCache = {};
 let fetchAllQueue = [];  // slugs waiting to be opened in sequence
 
+function listEntries() {
+  const ids = settings.lists || {};
+  return Object.keys(ids).filter(slug => String(ids[slug] || '').trim());
+}
+
+function listLabel(slug) {
+  const custom = (settings.listMeta || {})[slug];
+  if (custom && custom.label) return custom.label;
+  if (LIST_META[slug]) return LIST_META[slug].label;
+  return slug;
+}
+
+function listDesc(slug) {
+  const custom = (settings.listMeta || {})[slug];
+  if (custom && custom.desc) return custom.desc;
+  if (LIST_META[slug]) return LIST_META[slug].desc;
+  return '';
+}
+
+function slugifyListName(label) {
+  const base = String(label || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return base || 'list';
+}
+
+function parseListId(raw) {
+  const text = String(raw || '').trim();
+  const fromUrl = text.match(/lists\/(\d+)/);
+  if (fromUrl) return fromUrl[1];
+  if (/^\d+$/.test(text)) return text;
+  return '';
+}
+
 function collectListIds() {
   const out = {};
-  LIST_SLUGS.forEach(slug => { out[slug] = ($(`#list-id-${slug}`)?.value || '').trim(); });
+  for (const slug of listEntries()) out[slug] = String(settings.lists[slug]).trim();
   return out;
+}
+
+function saveLists() {
+  ipcRenderer.send('save-settings', {
+    lists: collectListIds(),
+    listMeta: settings.listMeta || {},
+  });
 }
 
 // ═══════════════════════════════════════════════════
@@ -145,90 +184,6 @@ ipcRenderer.on('platform-changed', (_e, { platform }) => {
 
 // Ask main for the persisted platform on boot.
 ipcRenderer.send('get-platform');
-
-// ═══════════════════════════════════════════════════
-// Product tabs. X is this sidebar. Home is a separate page that reloads
-// itself. The sidebar is not part of that page.
-// ═══════════════════════════════════════════════════
-let browserTab = 'x';
-let homeStatus = null;
-
-function applyBrowserTab(tab) {
-  browserTab = tab === 'home' ? 'home' : 'x';
-  document.body.classList.toggle('browser-tab-home', browserTab === 'home');
-  $$('.browser-tab').forEach(btn => {
-    const on = btn.dataset.browserTab === browserTab;
-    btn.classList.toggle('active', on);
-    btn.setAttribute('aria-selected', on ? 'true' : 'false');
-  });
-  renderHomeMeta();
-}
-
-function formatAgo(ts) {
-  if (!ts) return '';
-  const sec = Math.max(0, Math.round((Date.now() - ts) / 1000));
-  if (sec < 15) return 'just now';
-  if (sec < 60) return `${sec}s ago`;
-  const min = Math.round(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.round(min / 60);
-  return `${hr}h ago`;
-}
-
-function renderHomeMeta() {
-  const el = $('#home-tab-meta');
-  if (!el) return;
-  const status = homeStatus;
-  if (!status) {
-    el.textContent = '';
-    return;
-  }
-  if (status.refreshing) {
-    el.textContent = 'refreshing';
-    return;
-  }
-  const last = status.last || {};
-  const bits = [];
-  if (last.tweets) bits.push(`${last.tweets} tweets`);
-  if (last.news) bits.push(`${last.news} news`);
-  if (last.trends) bits.push(`${last.trends} trends`);
-  if (last.people) bits.push(`${last.people} people`);
-  const when = formatAgo(status.lastRefreshAt);
-  if (status.lastError && !bits.length) {
-    el.textContent = status.lastError;
-    return;
-  }
-  if (!bits.length) {
-    el.textContent = when ? `refreshed ${when}` : '';
-    return;
-  }
-  el.textContent = when ? `${bits.join(', ')} · ${when}` : bits.join(', ');
-}
-
-$$('.browser-tab').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const tab = btn.dataset.browserTab;
-    if (tab === browserTab) return;
-    applyBrowserTab(tab);
-    ipcRenderer.send('set-browser-tab', { tab });
-  });
-});
-
-$('#btn-home-reload')?.addEventListener('click', () => {
-  ipcRenderer.send('home-refresh');
-});
-
-ipcRenderer.on('browser-tab-changed', (_event, { tab } = {}) => {
-  applyBrowserTab(tab);
-});
-
-ipcRenderer.on('home-status', (_event, status) => {
-  homeStatus = status || null;
-  renderHomeMeta();
-});
-
-setInterval(renderHomeMeta, 15000);
-ipcRenderer.send('get-browser-tab');
 
 // ═══════════════════════════════════════════════════
 // Tab navigation
@@ -1011,11 +966,6 @@ ipcRenderer.on('settings-loaded', (event, loaded) => {
   if ($('#db-user'))     $('#db-user').value     = db.user     || 'postgres';
   if ($('#db-password')) $('#db-password').value = db.password || 'postgres';
   if ($('#db-database')) $('#db-database').value = db.database || 'xpose';
-  const listIds = settings.lists || {};
-  LIST_SLUGS.forEach(slug => {
-    const el = $(`#list-id-${slug}`);
-    if (el) el.value = listIds[slug] || '';
-  });
   // Auto-crawl scheduler fields
   const ac = settings.listAutoCrawl || {};
   if ($('#auto-crawl-enabled'))    $('#auto-crawl-enabled').checked  = !!ac.enabled;
@@ -1466,19 +1416,26 @@ function renderListCards() {
   const container = $('#lists-cards');
   if (!container) return;
   const ids = settings.lists || {};
-  container.innerHTML = LIST_SLUGS.map(slug => {
-    const meta = LIST_META[slug];
+  const slugs = listEntries();
+  if (!slugs.length) {
+    container.innerHTML = '<p class="list-card-empty">No lists yet. Add one below.</p>';
+    return;
+  }
+  container.innerHTML = slugs.map(slug => {
     const listId = ids[slug] || '';
     const stats = listStatsCache[slug] || {};
-    const configured = !!listId;
+    const desc = listDesc(slug);
     const isActive = activeListSlug === slug;
     return `
-      <div class="list-card${isActive ? ' list-card-active' : ''}" data-slug="${slug}">
+      <div class="list-card${isActive ? ' list-card-active' : ''}" data-slug="${escapeHtml(slug)}">
         <div class="list-card-head">
-          <div class="list-card-title">${meta.label}</div>
-          <div class="list-card-id">${configured ? `id ${escapeHtml(listId)}` : '<span style="color:#f87171">not configured</span>'}</div>
+          <div class="list-card-title">${escapeHtml(listLabel(slug))}</div>
+          <button type="button" class="list-delete-btn" data-slug="${escapeHtml(slug)}" title="Remove this list">
+            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+          </button>
         </div>
-        <div class="list-card-desc">${meta.desc}</div>
+        <div class="list-card-id">id ${escapeHtml(listId)}</div>
+        ${desc ? `<div class="list-card-desc">${escapeHtml(desc)}</div>` : ''}
         <div class="list-card-stats">
           <span title="Tweets captured today">today <b>${stats.today || 0}</b></span>
           <span title="Tweets captured last 7 days">7d <b>${stats.recent || 0}</b></span>
@@ -1488,11 +1445,13 @@ function renderListCards() {
         <div class="list-card-actions">
           ${isActive
             ? `<span class="text-x-text-secondary text-xs" style="font-style:italic">crawling… (use Stop in the status strip above)</span>`
-            : `<button class="sb-btn-primary list-open-btn" data-slug="${slug}" ${configured ? '' : 'disabled'}>Open &amp; crawl</button>`}
+            : `<button class="sb-btn-primary list-open-btn" data-slug="${escapeHtml(slug)}">Open &amp; crawl</button>`}
         </div>
       </div>
     `;
   }).join('');
+
+  initIcons();
 
   // Stop intentionally lives ONLY in the strip (#btn-stop-list-crawl) — not on the
   // card — to avoid a double-click trap where Open re-renders into Stop at the
@@ -1501,16 +1460,68 @@ function renderListCards() {
     btn.addEventListener('click', () => {
       const slug = btn.dataset.slug;
       const listId = (settings.lists || {})[slug];
-      if (!listId) { showGlobalStatus('Set the list ID in Settings first'); return; }
+      if (!listId) { showGlobalStatus('Add a list ID first'); return; }
       btn.disabled = true;
       btn.textContent = 'Loading…';
       ipcRenderer.send('open-list', { slug, listId });
     });
   });
+  container.querySelectorAll('.list-delete-btn').forEach(btn => {
+    btn.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      removeList(btn.dataset.slug);
+    });
+  });
+}
+
+function removeList(slug) {
+  if (!slug || !settings.lists || !settings.lists[slug]) return;
+  if (activeListSlug === slug) {
+    showGlobalStatus('Stop the crawl before removing this list');
+    return;
+  }
+  const next = { ...settings.lists };
+  delete next[slug];
+  const meta = { ...(settings.listMeta || {}) };
+  delete meta[slug];
+  settings.lists = next;
+  settings.listMeta = meta;
+  fetchAllQueue = fetchAllQueue.filter(s => s !== slug);
+  saveLists();
+  renderListCards();
+  refreshListStats();
+}
+
+function addList(label, rawId) {
+  const name = String(label || '').trim();
+  const listId = parseListId(rawId);
+  if (!name) { showGlobalStatus('Give the list a name'); return false; }
+  if (!listId) { showGlobalStatus('Paste a list ID or an x.com/i/lists/ URL'); return false; }
+  const ids = { ...(settings.lists || {}) };
+  let slug = slugifyListName(name);
+  let n = 2;
+  while (String(ids[slug] || '').trim()) {
+    slug = `${slugifyListName(name)}-${n++}`;
+  }
+  ids[slug] = listId;
+  const meta = { ...(settings.listMeta || {}) };
+  const known = LIST_META[slug];
+  meta[slug] = {
+    label: name,
+    desc: known && known.label === name ? known.desc : '',
+  };
+  settings.lists = ids;
+  settings.listMeta = meta;
+  saveLists();
+  renderListCards();
+  refreshListStats();
+  showGlobalStatus(`Added ${name}`);
+  return true;
 }
 
 function refreshListStats() {
-  ipcRenderer.send('get-list-stats', LIST_SLUGS);
+  ipcRenderer.send('get-list-stats', listEntries());
 }
 
 ipcRenderer.on('list-stats', (event, stats) => {
@@ -1551,6 +1562,13 @@ ipcRenderer.on('list-crawl-status', (event, payload) => {
 });
 
 $('#btn-refresh-lists')?.addEventListener('click', refreshListStats);
+$('#list-add-form')?.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const ok = addList($('#list-add-label')?.value, $('#list-add-id')?.value);
+  if (!ok) return;
+  if ($('#list-add-label')) $('#list-add-label').value = '';
+  if ($('#list-add-id')) $('#list-add-id').value = '';
+});
 $('#btn-stop-list-crawl')?.addEventListener('click', () => {
   fetchAllQueue = [];  // cancel queue on manual stop
   ipcRenderer.send('stop-list-crawl');
@@ -1558,8 +1576,7 @@ $('#btn-stop-list-crawl')?.addEventListener('click', () => {
 
 $('#btn-fetch-all-lists')?.addEventListener('click', () => {
   if (activeListSlug) { showGlobalStatus('Already crawling, stop first'); return; }
-  const ids = settings.lists || {};
-  const configured = LIST_SLUGS.filter(s => ids[s]);
+  const configured = listEntries();
   if (!configured.length) { showGlobalStatus('No list IDs configured in Settings'); return; }
   fetchAllQueue = configured.slice(1);  // remaining after the first
   openListSlug(configured[0]);
