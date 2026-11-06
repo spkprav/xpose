@@ -689,6 +689,55 @@ CREATE TRIGGER tweets_history_trg
   FOR EACH ROW
   EXECUTE PROCEDURE tweets_history_write();
 
+-- Own followers and following, kept by the Live pass.
+-- removed_at is null while the account is still on that list.
+-- A snapshot row is written only after a scroll that reached the end.
+-- History rows are added and removed, so a later pass can show the change.
+CREATE TABLE IF NOT EXISTS live_graph (
+    relation VARCHAR(16) NOT NULL,          -- follower | following
+    screen_name VARCHAR(50) NOT NULL,
+    user_id VARCHAR(30),
+    display_name VARCHAR(100),
+    followers_count INT DEFAULT 0,
+    following_count INT DEFAULT 0,
+    first_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    removed_at TIMESTAMP,
+    PRIMARY KEY (relation, screen_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_live_graph_open
+    ON live_graph (relation, removed_at);
+
+CREATE TABLE IF NOT EXISTS live_graph_history (
+    id BIGSERIAL PRIMARY KEY,
+    relation VARCHAR(16) NOT NULL,
+    screen_name VARCHAR(50) NOT NULL,
+    user_id VARCHAR(30),
+    display_name VARCHAR(100),
+    followers_count INT,
+    following_count INT,
+    event VARCHAR(16) NOT NULL,             -- added | removed
+    recorded_at TIMESTAMP NOT NULL DEFAULT clock_timestamp()
+);
+
+CREATE INDEX IF NOT EXISTS idx_live_graph_history_rel
+    ON live_graph_history (relation, recorded_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS live_graph_snapshots (
+    id BIGSERIAL PRIMARY KEY,
+    relation VARCHAR(16) NOT NULL,
+    total INT NOT NULL,
+    added INT NOT NULL DEFAULT 0,
+    removed INT NOT NULL DEFAULT 0,
+    header_count INT,
+    complete BOOLEAN NOT NULL DEFAULT FALSE,
+    recorded_at TIMESTAMP NOT NULL DEFAULT clock_timestamp()
+);
+
+CREATE INDEX IF NOT EXISTS idx_live_graph_snapshots_rel
+    ON live_graph_snapshots (relation, recorded_at DESC, id DESC);
+
 -- 2nd-degree connection candidates: non-circle users that circle frequently replies to
 CREATE OR REPLACE VIEW second_degree_candidates AS
 SELECT in_reply_to_screen_name AS screen_name, COUNT(*) AS interaction_count

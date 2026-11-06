@@ -85,8 +85,14 @@
             <span id="live-next" class="text-xs text-x-text-secondary">off</span>
           </div>
         </div>
+        <div class="circle-toolbar-row2">
+          <label class="live-follows" title="At the end of each pass, scroll your followers and following and save who joined and who left">
+            <input id="live-track-follows" type="checkbox" />
+            <span>Followers and following</span>
+          </label>
+        </div>
       </div>
-      <p class="live-meta">Play stays on and writes tweets, trends, news, and who to follow into live_signals. On each pass it reloads home, waits for the page to finish loading, then scrolls. After that it opens who to follow, explore, and news. The time next to Play is the gap between passes. Each new person is opened for bio, link, counts, pinned posts, highlights, tweets, and replies. After a pass it pings the check, which reads this same database.</p>
+      <p class="live-meta">Play stays on and writes tweets, trends, news, and who to follow into live_signals. On each pass it reloads home, waits for the page to finish loading, then scrolls. After that it opens who to follow, explore, and news. Then it opens each list saved on the Lists tab, scrolls three times, and moves to the next. When Followers and following is on, the pass then scrolls those two lists to the end at a slow pace and saves who joined and who left. That switch is off unless you turn it on. The time next to Play is the gap between passes. Each new suggested person is opened for bio, link, counts, pinned posts, highlights, tweets, and replies. After a pass it pings the check, which reads this same database.</p>
       <div id="live-strip" class="sb-crawl-strip hidden">
         <span class="crawl-pulse-dot"></span>
         <span id="live-strip-text" class="flex-1 text-xs text-x-text-secondary truncate">idle</span>
@@ -356,6 +362,12 @@
 
       <!-- Cards -->
       <div id="lists-cards" class="flex-1 overflow-y-auto p-3 space-y-2"></div>
+
+      <form id="list-import-form" class="list-add">
+        <input id="list-import-page" type="text" placeholder="x.com/someone/lists" class="sb-textarea font-mono text-xs" />
+        <button type="submit" id="btn-import-lists" class="sb-btn-primary">Import</button>
+        <span id="list-import-status" class="text-xs text-x-text-secondary"></span>
+      </form>
 
       <form id="list-add-form" class="list-add">
         <input id="list-add-label" type="text" placeholder="Name" class="sb-textarea text-xs" />

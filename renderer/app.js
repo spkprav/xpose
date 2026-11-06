@@ -227,6 +227,9 @@ function livePhaseLabel(phase) {
     'who-to-follow': 'who to follow',
     explore: 'explore',
     news: 'explore news',
+    lists: 'your lists',
+    followers: 'your followers',
+    following: 'your following',
     check: 'pinging the check',
     passive: 'watching the network',
   };
@@ -253,6 +256,9 @@ function renderLive(status) {
     if ([...interval.options].some(option => option.value === picked)) interval.value = picked;
   }
 
+  const follows = $('#live-track-follows');
+  if (follows) follows.checked = liveStatus.trackFollows === true;
+
   const on = !!liveStatus.running;
   btn.textContent = on ? 'On' : 'Play';
   btn.classList.toggle('live-on', on);
@@ -274,12 +280,25 @@ function renderLive(status) {
   if (strip && stripText) {
     const showStrip = on || liveStatus.phase === 'check';
     strip.classList.toggle('hidden', !showStrip);
-    stripText.textContent = showStrip ? livePhaseLabel(liveStatus.phase) : '';
+    let label = livePhaseLabel(liveStatus.phase);
+    const watch = liveStatus.graph;
+    if (watch && (liveStatus.phase === 'followers' || liveStatus.phase === 'following')) {
+      label = `${label}, ${watch.seen || 0} seen, scroll ${watch.scroll || 0}`;
+    }
+    const list = liveStatus.list;
+    if (list && liveStatus.phase === 'lists') {
+      label = `list ${list.index} of ${list.total}, ${list.slug}`;
+    }
+    stripText.textContent = showStrip ? label : '';
   }
 
   const c = liveStatus.counts || {};
   if (counts) {
-    counts.textContent = `${c.tweets || 0} tweets · ${c.people || 0} people · ${c.news || 0} news · ${c.trends || 0} trends`;
+    const totals = liveStatus.graphTotals || {};
+    let text = `${c.tweets || 0} tweets · ${c.people || 0} people · ${c.news || 0} news · ${c.trends || 0} trends`;
+    if (totals.follower != null) text += ` · ${Number(totals.follower).toLocaleString()} followers`;
+    if (totals.following != null) text += ` · ${Number(totals.following).toLocaleString()} following`;
+    counts.textContent = text;
   }
 
   if (errEl) {
@@ -300,7 +319,14 @@ function renderLive(status) {
   }
 
   if (recentEl) {
-    const kindLabel = { who_to_follow: 'who to follow', trend: 'trend', news: 'news', tweet: 'tweet' };
+    const kindLabel = {
+      who_to_follow: 'who to follow',
+      trend: 'trend',
+      news: 'news',
+      tweet: 'tweet',
+      follower: 'follower',
+      following: 'following',
+    };
     const rows = liveStatus.recent || [];
     recentEl.innerHTML = rows.length
       ? rows.slice().reverse().map(row => `
@@ -325,6 +351,10 @@ $('#btn-live-sync')?.addEventListener('click', () => {
 
 $('#live-interval')?.addEventListener('change', (event) => {
   ipcRenderer.send('live-interval', { minutes: Number(event.target.value) });
+});
+
+$('#live-track-follows')?.addEventListener('change', (event) => {
+  ipcRenderer.send('live-track-follows', { on: event.target.checked });
 });
 
 ipcRenderer.on('live-status', (_event, status) => {
@@ -1493,11 +1523,11 @@ function removeList(slug) {
   refreshListStats();
 }
 
-function addList(label, rawId) {
+function addList(label, rawId, { quiet = false } = {}) {
   const name = String(label || '').trim();
   const listId = parseListId(rawId);
-  if (!name) { showGlobalStatus('Give the list a name'); return false; }
-  if (!listId) { showGlobalStatus('Paste a list ID or an x.com/i/lists/ URL'); return false; }
+  if (!name) { if (!quiet) showGlobalStatus('Give the list a name'); return false; }
+  if (!listId) { if (!quiet) showGlobalStatus('Paste a list ID or an x.com/i/lists/ URL'); return false; }
   const ids = { ...(settings.lists || {}) };
   let slug = slugifyListName(name);
   let n = 2;
@@ -1516,8 +1546,32 @@ function addList(label, rawId) {
   saveLists();
   renderListCards();
   refreshListStats();
-  showGlobalStatus(`Added ${name}`);
+  if (!quiet) showGlobalStatus(`Added ${name}`);
   return true;
+}
+
+function loadImportedLists(lists) {
+  const existing = new Set(
+    Object.values(settings.lists || {}).map(value => String(value || '').trim()).filter(Boolean)
+  );
+  let added = 0;
+  let skipped = 0;
+  for (const list of lists || []) {
+    const id = String(list.id || '').trim();
+    if (!/^\d+$/.test(id)) continue;
+    if (existing.has(id)) {
+      skipped += 1;
+      continue;
+    }
+    const name = String(list.name || '').trim() || `List ${id}`;
+    if (!addList(name, id, { quiet: true })) continue;
+    existing.add(id);
+    added += 1;
+  }
+  const status = $('#list-import-status');
+  const summary = skipped ? `${added} added, ${skipped} already loaded` : `${added} added`;
+  if (status) status.textContent = summary;
+  showGlobalStatus(added ? `Imported ${added} lists` : 'No new lists');
 }
 
 function refreshListStats() {
@@ -1568,6 +1622,33 @@ $('#list-add-form')?.addEventListener('submit', (event) => {
   if (!ok) return;
   if ($('#list-add-label')) $('#list-add-label').value = '';
   if ($('#list-add-id')) $('#list-add-id').value = '';
+});
+
+$('#list-import-form')?.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const page = $('#list-import-page')?.value || '';
+  const btn = $('#btn-import-lists');
+  const status = $('#list-import-status');
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = 'Opening the page…';
+  ipcRenderer.send('import-user-lists', { page });
+});
+
+ipcRenderer.on('list-import-status', (_event, payload) => {
+  const btn = $('#btn-import-lists');
+  const status = $('#list-import-status');
+  const state = payload?.status;
+  if (state === 'done') {
+    if (btn) btn.disabled = false;
+    loadImportedLists(payload.lists || []);
+    return;
+  }
+  if (state === 'error') {
+    if (btn) btn.disabled = false;
+    if (status) status.textContent = payload.message || 'Import failed';
+    return;
+  }
+  if (status) status.textContent = payload.message || 'Looking…';
 });
 $('#btn-stop-list-crawl')?.addEventListener('click', () => {
   fetchAllQueue = [];  // cancel queue on manual stop

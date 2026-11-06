@@ -27,6 +27,7 @@ const workflowsRegistry = require('./lib/workflows');
 const { getIdentity } = require('./lib/identity');
 const LiveRunner = require('./lib/live/runner');
 const { isLiveCaptureUrl } = require('./lib/live/extract');
+const { extractLists, listPageUrl } = require('./lib/live/lists');
 const LIVE_PAGE_HOOK = require('./lib/live/page-hook');
 
 let win, twitterView, crawlView, linkedinView, settings, llmClient;
@@ -51,6 +52,8 @@ const listRequestMap = new Map(); // for Followers/Following interception on mai
 let focusMode = false;
 let crawler = null;
 let fetchingList = false;
+let importingUserLists = false;
+const importedUserLists = new Map();
 let listCaptured = [];
 
 // Feed scoring state — debounced after crawl, plus a periodic heartbeat.
@@ -1455,7 +1458,7 @@ function createWindow() {
         requestMap.set(params.requestId, {
           url,
           pagePath,
-          listSlug: pagePath === 'list' ? activeListSlug : null,
+          listSlug: pagePath === 'list' ? (activeListSlug || liveRunner?.listSlug || null) : null,
         });
       }
       // Also intercept Followers/Following when list fetch is active
@@ -1898,6 +1901,120 @@ function createWindow() {
   // ==================
   // stopListCrawl, scrollListOnce, openListFromMain hoisted to module scope so the
   // auto-crawl scheduler can drive them. IPC handlers below just delegate.
+
+  function noteImportedList(list) {
+    if (!list?.id) return;
+    const prev = importedUserLists.get(list.id);
+    if (prev) {
+      if (!prev.name && list.name) prev.name = list.name;
+      return;
+    }
+    importedUserLists.set(list.id, { id: String(list.id), name: list.name || '' });
+  }
+
+  function sendListImport(payload) {
+    if (win && !win.isDestroyed()) win.webContents.send('list-import-status', payload);
+  }
+
+  async function scrapeImportedListLinks() {
+    if (!twitterView || twitterView.webContents.isDestroyed()) return;
+    const found = await twitterView.webContents.executeJavaScript(`(() => {
+      const out = [];
+      const seen = new Set();
+      for (const link of document.querySelectorAll('a[href*="/lists/"]')) {
+        const href = link.getAttribute('href') || '';
+        const match = href.match(/\\/lists\\/(\\d+)/);
+        if (!match || seen.has(match[1])) continue;
+        seen.add(match[1]);
+        const lines = (link.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean);
+        const name = lines.find(line => line.length > 1 && line.length <= 80 && !/^\\d/.test(line)) || '';
+        out.push({ id: match[1], name: name.slice(0, 80) });
+      }
+      return out;
+    })()`);
+    for (const list of found || []) noteImportedList(list);
+  }
+
+  async function clickListTab(label) {
+    if (!twitterView || twitterView.webContents.isDestroyed()) return '';
+    const want = JSON.stringify([label.toLowerCase()]);
+    return twitterView.webContents.executeJavaScript(`(() => {
+      const want = ${want};
+      const nodes = document.querySelectorAll('a, button, [role="tab"], [role="link"]');
+      for (const node of nodes) {
+        const text = (node.innerText || '').trim().toLowerCase().split('\\n')[0];
+        if (!text || text.length > 32) continue;
+        if (want.includes(text)) { node.click(); return text; }
+      }
+      return '';
+    })()`);
+  }
+
+  async function scrollImportedLists() {
+    let idle = 0;
+    let prev = importedUserLists.size;
+    for (let i = 0; i < 25; i++) {
+      if (!importingUserLists) return;
+      try { await scrapeImportedListLinks(); } catch (_) {}
+      if (importedUserLists.size === prev) idle += 1;
+      else idle = 0;
+      prev = importedUserLists.size;
+      sendListImport({ status: 'scrolling', found: prev, message: `${prev} lists` });
+      if (idle >= 3 && i > 0) return;
+      try {
+        await twitterView.webContents.executeJavaScript(
+          'window.scrollBy(0, Math.max(500, Math.round((window.innerHeight || 800) * 0.85)))'
+        );
+      } catch (_) {}
+      await new Promise(resolve => setTimeout(resolve, 4000));
+    }
+  }
+
+  async function importUserLists(page) {
+    if (importingUserLists) return;
+    if (activeListSlug || fetchingList) {
+      sendListImport({ status: 'error', message: 'A list crawl is already running' });
+      return;
+    }
+    const livePhase = liveRunner?.phase;
+    if (liveRunner?.running && livePhase && !['idle', 'off', 'waiting'].includes(livePhase)) {
+      sendListImport({ status: 'error', message: 'Live is using the view. Try again when the pass is idle' });
+      return;
+    }
+    const url = listPageUrl(page);
+    if (!url) {
+      sendListImport({ status: 'error', message: 'Paste a lists page, like x.com/Scobleizer/lists' });
+      return;
+    }
+    importingUserLists = true;
+    importedUserLists.clear();
+    try {
+      sendListImport({ status: 'loading', message: 'Opening the lists page' });
+      await twitterView.webContents.loadURL(url);
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      await scrollImportedLists();
+      for (const label of ['Owned', 'Memberships', 'Subscribed']) {
+        if (!importingUserLists) break;
+        const clicked = await clickListTab(label);
+        if (!clicked) continue;
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        await scrollImportedLists();
+      }
+      const lists = [...importedUserLists.values()];
+      sendListImport({ status: 'done', found: lists.length, lists, message: `${lists.length} lists` });
+    } catch (err) {
+      sendListImport({ status: 'error', message: err.message || 'Import failed' });
+    } finally {
+      importingUserLists = false;
+    }
+  }
+
+  ipcMain.on('import-user-lists', (_event, { page } = {}) => {
+    importUserLists(page).catch(err => {
+      importingUserLists = false;
+      sendListImport({ status: 'error', message: err.message || 'Import failed' });
+    });
+  });
 
   ipcMain.on('open-list', async (event, { slug, listId }) => {
     if (!slug || !listId) {
@@ -2549,7 +2666,7 @@ function createWindow() {
     liveRunner = new LiveRunner({
       getView: () => twitterView,
       db,
-      isBusy: () => !!(activeListSlug || fetchingList || pendingFetch),
+      isBusy: () => !!(activeListSlug || fetchingList || pendingFetch || importingUserLists),
       getPlatform: () => activePlatform,
       emit: (status) => {
         if (win && !win.isDestroyed()) win.webContents.send('live-status', status);
@@ -2564,7 +2681,18 @@ function createWindow() {
         const prev = settings.get('liveCapture') || {};
         settings.set('liveCapture', { ...prev, intervalMinutes: minutes });
       },
+      persistTrackFollows: (on) => {
+        if (!settings) return;
+        const prev = settings.get('liveCapture') || {};
+        settings.set('liveCapture', { ...prev, trackFollows: !!on });
+      },
       intervalMinutes: settings.get('liveCapture')?.intervalMinutes,
+      trackFollows: settings.get('liveCapture')?.trackFollows === true,
+      getScreenName: () => settings.get('profile')?.screen_name || '',
+      getLists: () => {
+        const ids = settings.get('lists') || {};
+        return Object.keys(ids).map(slug => ({ slug, id: ids[slug] }));
+      },
     });
   }
 
@@ -2578,6 +2706,10 @@ function createWindow() {
     liveRunner?.setIntervalMinutes(minutes);
   });
 
+  ipcMain.on('live-track-follows', (_event, { on } = {}) => {
+    liveRunner?.setTrackFollows(on);
+  });
+
   ipcMain.on('live-sync', () => {
     liveRunner?.syncNow();
   });
@@ -2589,10 +2721,27 @@ function createWindow() {
   if (!liveNetHooked) {
     liveNetHooked = true;
     ipcMain.on('live-net-body', (_event, { url, body } = {}) => {
+      if (importingUserLists && body) {
+        try {
+          const json = JSON.parse(body);
+          for (const list of extractLists(json)) noteImportedList(list);
+        } catch (_) {}
+      }
       if (!liveRunner?.running || !url || !body) return;
       if (!isLiveCaptureUrl(url)) return;
       liveRunner.pageHook = true;
       liveRunner.accept(url, body);
+      // The list page's timeline body often never comes back through CDP.
+      // The page hook has it. Save it onto the list the pass is standing on.
+      if (liveRunner.listSlug && crawler && url.includes('/ListLatestTweetsTimeline')) {
+        try {
+          const json = JSON.parse(body);
+          const slug = liveRunner.listSlug;
+          crawler.ingestListResponse(json.data || json, slug).catch(err => {
+            console.error('[Live] list save:', err.message);
+          });
+        } catch (_) {}
+      }
     });
   }
 

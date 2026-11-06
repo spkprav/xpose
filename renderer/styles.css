@@ -248,6 +248,53 @@ select.sb-input {
   white-space: nowrap;
 }
 
+.live-follows {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #71767b;
+  cursor: pointer;
+  user-select: none;
+}
+
+.live-follows input {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 28px;
+  height: 16px;
+  margin: 0;
+  border-radius: 999px;
+  background: #3e4144;
+  position: relative;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.live-follows input::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+
+.live-follows input:checked {
+  background: #1d9bf0;
+}
+
+.live-follows input:checked::after {
+  transform: translateX(12px);
+}
+
+.live-follows input:checked + span {
+  color: #e7e9ea;
+}
+
 .live-meta {
   padding: 8px 12px 4px;
   font-size: 11px;
