@@ -2665,36 +2665,29 @@ function resizeTwitterView() {
 
   const contentWidth = focusMode ? mobileWidth : Math.max(0, bounds.width - normalSidebarWidth);
   const visibleTarget = { x: 0, y: TAB_BAR_HEIGHT, width: contentWidth, height };
+  const homeVisible = { x: 0, y: TAB_BAR_HEIGHT, width: bounds.width, height };
+  // A second page has to leave the screen. Stacking it on the same rectangle
+  // made both tabs show whichever view last resized.
+  const parked = {
+    x: -16000,
+    y: TAB_BAR_HEIGHT,
+    width: Math.max(800, contentWidth),
+    height: Math.max(600, height),
+  };
 
-  const xTarget   = activePlatform === 'x'        ? visibleTarget : HIDDEN_BOUNDS;
-  const liTarget  = activePlatform === 'linkedin' ? visibleTarget : HIDDEN_BOUNDS;
-  // crawlView only ever runs in X mode (twitter crawler). Hide in LinkedIn mode.
-  const crawlTarget = activePlatform === 'x' ? visibleTarget : HIDDEN_BOUNDS;
-
-  if (twitterView && !twitterView.webContents.isDestroyed()) {
-    twitterView.setBounds(xTarget);
-    try { twitterView.webContents.invalidate(); } catch {}
-  }
-  if (linkedinView && !linkedinView.webContents.isDestroyed()) {
-    linkedinView.setBounds(liTarget);
-    try { linkedinView.webContents.invalidate(); } catch {}
-  }
-  if (crawlView && !crawlView.webContents.isDestroyed()) {
-    crawlView.setBounds(crawlTarget);
-    try { crawlView.webContents.invalidate(); } catch {}
-  }
-  if (homeView && !homeView.webContents.isDestroyed()) {
-    // On the Home tab the page fills the window (no sidebar). Otherwise it
-    // keeps the same column as X, underneath, so a reload still has a viewport
-    // and does not paint over the sidebar.
-    const homeTarget = browserTab === 'home'
-      ? { x: 0, y: TAB_BAR_HEIGHT, width: bounds.width, height }
-      : visibleTarget;
-    homeView.setBounds(homeTarget);
-    try { homeView.webContents.invalidate(); } catch {}
-  }
+  const showHome = browserTab === 'home';
+  placeView(twitterView, !showHome && activePlatform === 'x' ? visibleTarget : parked);
+  placeView(crawlView, !showHome && activePlatform === 'x' ? visibleTarget : parked);
+  placeView(linkedinView, !showHome && activePlatform === 'linkedin' ? visibleTarget : parked);
+  placeView(homeView, showHome ? homeVisible : parked);
 
   raiseActiveView();
+}
+
+function placeView(view, bounds) {
+  if (!view || view.webContents.isDestroyed()) return;
+  view.setBounds(bounds);
+  try { view.webContents.invalidate(); } catch {}
 }
 
 // Which page is visible. The others keep their bounds and keep running.
@@ -2740,11 +2733,19 @@ function armHomeRefresh() {
   const keepUserTab = () => {
     if (browserTab !== 'home') raiseActiveView();
   };
-  wc.on('did-start-loading', () => {
+  const injectHomeHook = () => {
+    if (wc.isDestroyed()) return;
+    wc.executeJavaScript(HOME_PAGE_HOOK).catch(() => {});
+  };
+  wc.on('dom-ready', injectHomeHook);
+  // Subframe loads also emit did-start-loading / did-stop-loading. Those were
+  // resetting the 5 minute clock and pulling the visible tab around.
+  wc.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
+    if (!isMainFrame) return;
     homeRefresh?.onStart();
     keepUserTab();
   });
-  wc.on('did-stop-loading', () => {
+  wc.on('did-finish-load', () => {
     homeRefresh?.onSettle();
     keepUserTab();
   });
@@ -2768,13 +2769,50 @@ function armHomeRefresh() {
     return;
   }
 
+  // Today's News is useStoryTopicQuery. The page hook is the copy that usually
+  // has the body. Network.getResponseBody is the backup when that hook misses
+  // the call. Fetch domain stays off.
+  const homeNetIds = new Map();
+  wc.debugger.on('message', async (_event, method, params) => {
+    try {
+      if (method === 'Network.requestWillBeSent') {
+        const url = params.request?.url || '';
+        if (isLiveCaptureUrl(url)) homeNetIds.set(params.requestId, url);
+        return;
+      }
+      if (method === 'Network.loadingFailed') {
+        homeNetIds.delete(params.requestId);
+        return;
+      }
+      if (method !== 'Network.loadingFinished') return;
+      const url = homeNetIds.get(params.requestId);
+      homeNetIds.delete(params.requestId);
+      if (!url || !homeRefresh || wc.isDestroyed()) return;
+      const response = await wc.debugger.sendCommand('Network.getResponseBody', {
+        requestId: params.requestId,
+      });
+      const body = response.base64Encoded
+        ? Buffer.from(response.body, 'base64').toString('utf8')
+        : response.body;
+      if (body) homeRefresh.accept(url, body);
+    } catch (_) {}
+  });
+  wc.debugger.sendCommand('Network.enable', {
+    maxResourceBufferSize: 10000000,
+    maxTotalBufferSize: 50000000,
+  }).catch(err => {
+    console.error('[Home] network enable failed:', err.message);
+  });
+
   wc.debugger.sendCommand('Page.enable').then(() => (
     wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: HOME_PAGE_HOOK })
   )).then(() => {
     console.log('[Home] page hook armed');
+    injectHomeHook();
     load();
   }).catch(err => {
     console.error('[Home] page hook arm failed:', err.message);
+    injectHomeHook();
     load();
   });
 }
