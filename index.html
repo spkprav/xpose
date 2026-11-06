@@ -78,7 +78,7 @@
         <div class="circle-toolbar-row1">
           <div class="live-toolbar-actions">
             <button id="btn-live-play" class="sb-btn-primary" type="button">Play</button>
-            <button id="btn-live-sync" class="sb-btn-ghost" type="button" title="Copy the database to Neon">Sync</button>
+            <button id="btn-live-sync" class="sb-btn-ghost" type="button" title="Ask the check to read the database">Check</button>
           </div>
           <div class="live-toolbar-gap">
             <select id="live-interval" class="sb-input live-interval" title="Time between passes">
@@ -92,7 +92,7 @@
           </div>
         </div>
       </div>
-      <p class="live-meta">Play stays on and writes tweets, trends, news, and who to follow into live_signals. On each pass it reloads home, waits for the page to finish loading, then scrolls. After that it opens who to follow, explore, and news. The time next to Play is the gap between passes. Each new person is opened for bio, link, counts, pinned posts, highlights, tweets, and replies. Sync copies that database to Neon.</p>
+      <p class="live-meta">Play stays on and writes tweets, trends, news, and who to follow into live_signals. On each pass it reloads home, waits for the page to finish loading, then scrolls. After that it opens who to follow, explore, and news. The time next to Play is the gap between passes. Each new person is opened for bio, link, counts, pinned posts, highlights, tweets, and replies. After a pass it pings the check, which reads this same database.</p>
       <div id="live-strip" class="sb-crawl-strip hidden">
         <span class="crawl-pulse-dot"></span>
         <span id="live-strip-text" class="flex-1 text-xs text-x-text-secondary truncate">idle</span>
@@ -815,7 +815,7 @@
 
         <section>
           <h2 class="settings-heading">Database (Postgres)</h2>
-          <p class="text-xs text-x-text-secondary mb-2">Local or remote. Test before saving.</p>
+          <p class="text-xs text-x-text-secondary mb-2">Writes go to NEON_DB_URL in .env. These fields apply only when that value is empty.</p>
           <div class="grid grid-cols-2 gap-2">
             <input id="db-host" placeholder="host (e.g. localhost)" class="sb-textarea font-mono text-xs col-span-2" />
             <input id="db-port" placeholder="port (5432)" class="sb-textarea font-mono text-xs" />

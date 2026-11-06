@@ -272,7 +272,7 @@ function livePhaseLabel(phase) {
     'who-to-follow': 'who to follow',
     explore: 'explore',
     news: 'explore news',
-    sync: 'copying the database',
+    check: 'pinging the check',
     passive: 'watching the network',
   };
   return labels[phase] || phase || 'off';
@@ -304,9 +304,9 @@ function renderLive(status) {
   btn.title = on ? 'Click to stop' : 'Start capturing';
 
   if (syncBtn) {
-    const syncing = !!liveStatus.syncing || liveStatus.phase === 'sync';
+    const syncing = !!liveStatus.syncing || liveStatus.phase === 'check';
     syncBtn.disabled = syncing;
-    syncBtn.textContent = syncing ? 'Syncing' : 'Sync';
+    syncBtn.textContent = syncing ? 'Checking' : 'Check';
   }
 
   if (next) {
@@ -317,7 +317,7 @@ function renderLive(status) {
   }
 
   if (strip && stripText) {
-    const showStrip = on || liveStatus.phase === 'sync';
+    const showStrip = on || liveStatus.phase === 'check';
     strip.classList.toggle('hidden', !showStrip);
     stripText.textContent = showStrip ? livePhaseLabel(liveStatus.phase) : '';
   }

@@ -2808,6 +2808,8 @@ app.whenReady().then(async () => {
   }
   settings = new Settings();
   db.configure(settings.get('database'));
+  const dbTarget = db.getConfig();
+  console.log(`[Boot] database: ${dbTarget.host}/${dbTarget.database}`);
   try {
     const reset = await db.resetAllRunningOnBoot();
     if (reset) console.log(`[Boot] Reset ${reset} stale 'running' crawl jobs to 'pending'`);
