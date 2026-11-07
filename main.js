@@ -1030,6 +1030,11 @@ function createWindow() {
     const prevDb = JSON.stringify(settings.get('database'));
     const prevAuto = JSON.stringify(settings.get('listAutoCrawl'));
     const success = settings.update(newSettings);
+    if (newSettings && newSettings.lists && typeof newSettings.lists === 'object') {
+      db.replaceLiveLists(newSettings.lists).catch(err => {
+        console.error('[Live] list save:', err.message);
+      });
+    }
     llmClient = null; // Reset client to pick up new settings
     // If DB config changed, reconfigure the pool
     if (JSON.stringify(settings.get('database')) !== prevDb) {
@@ -2689,8 +2694,19 @@ function createWindow() {
       intervalMinutes: settings.get('liveCapture')?.intervalMinutes,
       trackFollows: settings.get('liveCapture')?.trackFollows === true,
       getScreenName: () => settings.get('profile')?.screen_name || '',
-      getLists: () => {
-        const ids = settings.get('lists') || {};
+      getLists: async () => {
+        try {
+          const rows = await db.getLiveLists();
+          if (rows.length) return rows;
+        } catch (err) {
+          console.error('[Live] lists from database:', err.message);
+        }
+        const usable = (ids) => Object.values(ids || {}).some(id => /^\d{2,22}$/.test(String(id || '').trim()));
+        let ids = settings.get('lists') || {};
+        if (!usable(ids)) {
+          settings.reload();
+          ids = settings.get('lists') || {};
+        }
         return Object.keys(ids).map(slug => ({ slug, id: ids[slug] }));
       },
     });

@@ -738,6 +738,13 @@ CREATE TABLE IF NOT EXISTS live_graph_snapshots (
 CREATE INDEX IF NOT EXISTS idx_live_graph_snapshots_rel
     ON live_graph_snapshots (relation, recorded_at DESC, id DESC);
 
+-- List ids the Live pass opens. Shared across machines. Local settings are a copy.
+CREATE TABLE IF NOT EXISTS live_lists (
+    slug VARCHAR(80) PRIMARY KEY,
+    list_id VARCHAR(30) NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 -- 2nd-degree connection candidates: non-circle users that circle frequently replies to
 CREATE OR REPLACE VIEW second_degree_candidates AS
 SELECT in_reply_to_screen_name AS screen_name, COUNT(*) AS interaction_count
