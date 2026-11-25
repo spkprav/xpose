@@ -161,3 +161,37 @@ This repo exists because the tool is useful for personal research on data you al
 - Do not crawl other users' followers / following at a scale you'd be uncomfortable with someone doing to you.
 
 Read X's TOS yourself: https://x.com/en/tos (§4 is the relevant part).
+
+### Neon tweet retention
+
+1. Stop the app during the initial copy. In its `.env` set `NEON_DB_URL`
+   and `TWEET_ARCHIVE_DB_URL`. For example, use
+   `postgresql://archive_user@pi-host:5432/mevinx_tweet_archive` as the archive
+   URL, with your actual connection details. Run setup from a machine that
+   can reach both databases. The Pi role needs access to the `postgres`
+   maintenance database and `CREATEDB` if the archive database is missing.
+   For an existing archive database, it needs permission to create and write
+   the archive table. The Neon role needs read and delete access to the tweet
+   tables and privileges for the locks used during cleanup.
+2. Run `npm run db:setup-tweet-retention`. It creates the archive database
+   and table, copies existing tweet data including the recent window, then
+   removes expired rows from Neon. Each deletion batch commits to the
+   archive first. The command can be rerun after an interruption.
+3. Start the app with `npm start` from the same configuration and start or
+   resume Live. Each completed Live pass archives expired rows before the
+   webhook runs. Use `npm run db:retain-tweets` for on-demand cleanup.
+
+`NEON_TWEET_RETENTION_HOURS` defaults to 24 hours and replaces the former
+row limit. Cleanup uses capture time for tweets and list sources, last seen
+time for tweet signals, and recording time for snapshots. At the end of a
+Live pass the cutoff extends back to the start of that pass if needed.
+It also preserves analysis, actions, list sources and scores when their
+parent tweet leaves Neon. Archive records live in `tweet_archive` as JSONB
+with the source database, original table and row key. The existing app
+continues to read its recent working set from Neon. Other signal types are
+outside the retention job.
+
+The time window is applied at cleanup time. Database size also depends on
+capture volume, row sizes, indexes and other tables. Deletes make space available for reuse
+after vacuuming. Immediate physical storage reclamation is a separate
+database maintenance operation.

@@ -17,7 +17,9 @@
     "wiki:flush": "node lib/wiki/flush-keywords.js",
     "wiki:enrich-rt": "node lib/wiki/enrich-from-rt.js",
     "wiki:bucket": "node lib/wiki/classify-niche.js",
-    "wiki:lists": "node lib/wiki/lists.js"
+    "wiki:lists": "node lib/wiki/lists.js",
+    "db:retain-tweets": "node scripts/retain-neon-tweets.js",
+    "db:setup-tweet-retention": "node scripts/retain-neon-tweets.js --setup"
   },
   "keywords": [
     "electron",

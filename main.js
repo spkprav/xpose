@@ -1508,7 +1508,9 @@ function createWindow() {
         return;
       }
 
-      if (liveUrl && rawBody && liveRunner?.running && !liveRunner.pageHook) {
+      // Page hook and CDP both see the same body. accept() keeps one copy.
+      // A second ingest() here used to save it again at the same time.
+      if (liveUrl && rawBody && liveRunner?.running) {
         liveRunner.accept(liveUrl, rawBody);
       }
 
@@ -1533,14 +1535,6 @@ function createWindow() {
             console.log(`[ListFetch] ${key}: no instructions found. Top-level keys:`, Object.keys(data));
           }
         } catch (_) {}
-      }
-
-      if (liveUrl && liveRunner && liveRunner.running) {
-        try {
-          await liveRunner.ingest(jsonResponse, liveUrl);
-        } catch (err) {
-          console.error('[Live] ingest error:', err.message);
-        }
       }
 
       if (!requestInfo) return;
@@ -2896,7 +2890,14 @@ app.on('before-quit', async (e) => {
 });
 
 process.on('uncaughtException', async (err) => {
-  console.error('[uncaughtException]', err);
+  if (err && err.client) delete err.client;
+  const message = err && err.message ? err.message : String(err);
+  console.error('[uncaughtException]', message);
+  // Neon closing an idle socket used to take the whole app down.
+  if (/connection terminated/i.test(message)) {
+    console.error('[db] database connection dropped. kept running');
+    return;
+  }
   await flushCurrentJobOnExit('uncaughtException');
   process.exit(1);
 });
